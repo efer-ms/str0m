@@ -1321,10 +1321,12 @@ impl MediaInner {
         self.simulcast = Some(s);
     }
 
-    pub fn ssrc_rx_for_rid(&self, repairs: Rid) -> Option<Ssrc> {
+    pub fn find_primary_ssrc_for_rid(&self, repairs: Option<Rid>, rtx_ssrc: Ssrc) -> Option<Ssrc> {
+        // Find the most recent matching ssrc, in case the ssrc has changed. We ignore sources with
+        // repairs, as those are RTX, and we ignore ourselves.
         self.sources_rx
             .iter()
-            .find(|r| r.rid() == Some(repairs))
+            .rfind(|r| r.rid() == repairs && r.ssrc() != rtx_ssrc && !r.is_rtx())
             .map(|r| r.ssrc())
     }
 
@@ -1561,6 +1563,25 @@ impl Default for MediaInner {
 }
 
 impl MediaInner {
+    pub fn new_from_remote(
+        mid: Mid,
+        kind: MediaKind,
+        index: usize,
+        exts: ExtensionMap,
+        dir: Direction,
+        params: Vec<PayloadParams>,
+    ) -> Self {
+        MediaInner {
+            mid,
+            index,
+            kind,
+            exts,
+            dir,
+            params,
+            ..Default::default()
+        }
+    }
+
     pub fn from_remote_media_line(l: &MediaLine, index: usize, exts: ExtensionMap) -> Self {
         MediaInner {
             mid: l.mid(),

@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::format::PayloadParams;
 pub use crate::rtp::VideoOrientation;
-pub use crate::rtp::{Direction, ExtensionValues, MediaTime, Mid, Pt, Rid};
+pub use crate::rtp::{Direction, ExtensionValues, MediaTime, Mid, Pt, Rid, Ssrc};
 
 use crate::{Rtc, RtcError};
 
