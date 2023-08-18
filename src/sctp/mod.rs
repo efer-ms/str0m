@@ -517,8 +517,8 @@ impl RtcSctp {
                         };
                     }
                     Err(e) => {
-                        warn!("Opening stream {} failed: {:?}", entry.id, e);
-                        entry.do_close = true;
+                        warn!("Stream {} was already open", entry.id, e);
+                        entry.set_state(StreamEntryState::Open);
                         continue;
                     }
                 };
