@@ -517,15 +517,22 @@ impl RtcSctp {
                         };
                     }
                     Err(ProtoError::ErrStreamAlreadyExist) => {
-                        warn!("Stream {} was already open", entry.id);
                         let config = entry.config.as_ref().expect("config if AwaitOpen");
-                        let label = config.label.clone();
-                        entry.set_state(StreamEntryState::Open);
+                        let in_band = config.negotiated.is_none();
 
-                        return Some(SctpEvent::Open {
-                            id: entry.id,
-                            label,
-                        });
+                        if in_band {
+                            warn!("Opening stream {} failed: ErrStreamAlreadyExists with in-band", entry.id);
+                            entry.do_close = true;
+                            continue;
+                        } else {
+                            warn!("Stream {} was already open", entry.id);
+                            let label = config.label.clone();
+                            entry.set_state(StreamEntryState::Open);
+                            return Some(SctpEvent::Open {
+                                id: entry.id,
+                                label,
+                            });
+                        }
                     }
                     Err(e) => {
                         warn!("Opening stream {} failed: {:?}", entry.id, e);
