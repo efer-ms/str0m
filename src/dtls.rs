@@ -16,6 +16,11 @@ pub enum DtlsError {
     #[cfg(feature = "openssl")]
     OpenSsl(#[from] openssl::error::ErrorStack),
 
+    /// Some error from Windows CNG layer (used for DTLS).
+    #[error("{0}")]
+    #[cfg(feature = "windows_cng")]
+    WindowsCng(#[from] openssl::error::ErrorStack),
+
     /// Other IO errors.
     #[error("{0}")]
     Io(#[from] io::Error),
@@ -37,6 +42,8 @@ impl From<CryptoError> for DtlsError {
         match value {
             #[cfg(feature = "openssl")]
             CryptoError::OpenSsl(e) => DtlsError::OpenSsl(e),
+            #[cfg(feature = "windows_cng")]
+            CryptoError::WindowsCng(e) => DtlsError::WindowsCng(e),
             CryptoError::Io(e) => DtlsError::Io(e),
         }
     }

@@ -1111,7 +1111,11 @@ impl Rtc {
             {
                 DtlsCert::new_openssl()
             }
-            #[cfg(not(feature = "openssl"))]
+            #[cfg(feature = "windows_cng")]
+            {
+                DtlsCert::new_windows_cng()
+            }
+            #[cfg(not(any(feature = "openssl", feature = "windows_cng")))]
             {
                 panic!("No DTLS implementation. Enable openssl feature");
             }
