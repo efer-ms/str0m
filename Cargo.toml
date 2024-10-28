@@ -24,10 +24,11 @@ rust-version = "1.65"
 # security patching than updating statically linked software.
 
 [features]
-default = []#["openssl", "vendored", "sha1"]
+default = ["windows_cng"]
+# default = ["openssl", "vendored", "sha1"]
 openssl = ["dep:openssl", "dep:openssl-sys", "dep:libc"]
 vendored = ["openssl?/vendored"]
-windows_cng = ["sha1", "dep:windows", "dep:windows-strings", "dep:openssl", "dep:openssl-sys", "dep:libc"]
+windows_cng = ["dep:windows", "dep:windows-strings", "dep:openssl", "dep:openssl-sys", "dep:libc"]
 
 # Without the sha1 feature, str0m uses the openssl sha1 impl which is slower.
 sha1 = ["dep:sha1"]
