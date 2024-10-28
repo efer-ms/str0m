@@ -51,9 +51,9 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<(), CryptoError> {
-        self.0.encrypt_init(None, None, Some(iv))?;
-        let count = self.0.cipher_update(input, Some(output))?;
-        self.0.cipher_final(&mut output[count..])?;
+        self.0.encrypt_init(None, None, Some(iv)).unwrap();
+        let count = self.0.cipher_update(input, Some(output)).unwrap();
+        self.0.cipher_final(&mut output[count..]).unwrap();
         Ok(())
     }
 
@@ -63,9 +63,9 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<(), CryptoError> {
-        self.0.decrypt_init(None, None, Some(iv))?;
-        let count = self.0.cipher_update(input, Some(output))?;
-        self.0.cipher_final(&mut output[count..])?;
+        self.0.decrypt_init(None, None, Some(iv)).unwrap();
+        let count = self.0.cipher_update(input, Some(output)).unwrap();
+        self.0.cipher_final(&mut output[count..]).unwrap();
         Ok(())
     }
 }
@@ -107,21 +107,22 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
         );
 
         // Set the IV
-        self.0.encrypt_init(None, None, Some(iv))?;
+        self.0.encrypt_init(None, None, Some(iv)).unwrap();
 
         // Add the additional authenticated data, omitting the output argument informs
         // OpenSSL that we are providing AAD.
-        let aad_c = self.0.cipher_update(aad, None)?;
+        let aad_c = self.0.cipher_update(aad, None).unwrap();
         // TODO: This should maybe be an error
         assert!(aad_c == aad.len());
 
-        let count = self.0.cipher_update(input, Some(output))?;
-        let final_count = self.0.cipher_final(&mut output[count..])?;
+        let count = self.0.cipher_update(input, Some(output)).unwrap();
+        let final_count = self.0.cipher_final(&mut output[count..]).unwrap();
 
         // Get the authentication tag and append it to the output
         let tag_offset = count + final_count;
         self.0
-            .tag(&mut output[tag_offset..tag_offset + aead_aes_128_gcm::TAG_LEN])?;
+            .tag(&mut output[tag_offset..tag_offset + aead_aes_128_gcm::TAG_LEN])
+            .unwrap();
 
         Ok(())
     }
@@ -138,20 +139,20 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
 
         let (cipher_text, tag) = input.split_at(input.len() - aead_aes_128_gcm::TAG_LEN);
 
-        self.0.decrypt_init(None, None, Some(iv))?;
+        self.0.decrypt_init(None, None, Some(iv)).unwrap();
 
         // Add the additional authenticated data, omitting the output argument informs
         // OpenSSL that we are providing AAD.
         // With this the authentication tag will be verified.
         for aad in aads {
-            self.0.cipher_update(aad, None)?;
+            self.0.cipher_update(aad, None).unwrap();
         }
 
-        self.0.set_tag(tag)?;
+        self.0.set_tag(tag).unwrap();
 
-        let count = self.0.cipher_update(cipher_text, Some(output))?;
+        let count = self.0.cipher_update(cipher_text, Some(output)).unwrap();
 
-        let final_count = self.0.cipher_final(&mut output[count..])?;
+        let final_count = self.0.cipher_final(&mut output[count..]).unwrap();
 
         Ok(count + final_count)
     }

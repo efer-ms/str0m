@@ -130,49 +130,51 @@ impl DtlsInner for CngDtlsImpl {
 }
 
 pub fn dtls_create_ctx(cert: &CngDtlsCert) -> Result<SslContext, CryptoError> {
-    // TODO: Technically we want to disallow DTLS < 1.2, but that requires
-    // us to use this commented out unsafe. We depend on browsers disallowing
-    // it instead.
-    // let method = unsafe { SslMethod::from_ptr(DTLSv1_2_method()) };
-    let mut ctx = SslContextBuilder::new(SslMethod::dtls())?;
+    // // TODO: Technically we want to disallow DTLS < 1.2, but that requires
+    // // us to use this commented out unsafe. We depend on browsers disallowing
+    // // it instead.
+    // // let method = unsafe { SslMethod::from_ptr(DTLSv1_2_method()) };
+    // let mut ctx = SslContextBuilder::new(SslMethod::dtls())?;
 
-    ctx.set_cipher_list(DTLS_CIPHERS)?;
-    let srtp_profiles = {
-        // Rust can't join directly to a string, need to allocate a vec first :(
-        // This happens very rarely so the extra allocations don't matter
-        let all: Vec<_> = SrtpProfile::ALL
-            .iter()
-            .map(SrtpProfile::windows_cng_name)
-            .collect();
+    // ctx.set_cipher_list(DTLS_CIPHERS)?;
+    // let srtp_profiles = {
+    //     // Rust can't join directly to a string, need to allocate a vec first :(
+    //     // This happens very rarely so the extra allocations don't matter
+    //     let all: Vec<_> = SrtpProfile::ALL
+    //         .iter()
+    //         .map(SrtpProfile::windows_cng_name)
+    //         .collect();
 
-        all.join(":")
-    };
-    ctx.set_tlsext_use_srtp(&srtp_profiles)?;
+    //     all.join(":")
+    // };
+    // ctx.set_tlsext_use_srtp(&srtp_profiles)?;
 
-    let mut mode = SslVerifyMode::empty();
-    mode.insert(SslVerifyMode::PEER);
-    mode.insert(SslVerifyMode::FAIL_IF_NO_PEER_CERT);
-    ctx.set_verify_callback(mode, |_ok, _ctx| true);
+    // let mut mode = SslVerifyMode::empty();
+    // mode.insert(SslVerifyMode::PEER);
+    // mode.insert(SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+    // ctx.set_verify_callback(mode, |_ok, _ctx| true);
 
-    ctx.set_private_key(&cert.pkey)?;
-    ctx.set_certificate(&cert.x509)?;
+    // ctx.set_private_key(&cert.pkey)?;
+    // ctx.set_certificate(&cert.x509)?;
 
-    let mut options = SslOptions::empty();
-    options.insert(SslOptions::SINGLE_ECDH_USE);
-    options.insert(SslOptions::NO_DTLSV1);
-    ctx.set_options(options);
+    // let mut options = SslOptions::empty();
+    // options.insert(SslOptions::SINGLE_ECDH_USE);
+    // options.insert(SslOptions::NO_DTLSV1);
+    // ctx.set_options(options);
 
-    let ctx = ctx.build();
+    // let ctx = ctx.build();
 
-    Ok(ctx)
+    // Ok(ctx)
+    panic!("Not impl!");
 }
 
 pub fn dtls_ssl_create(ctx: &SslContext) -> Result<Ssl, CryptoError> {
-    let mut ssl = Ssl::new(ctx)?;
-    ssl.set_mtu(DATAGRAM_MTU as u32)?;
+    panic!("Not impl!");
+    // let mut ssl = Ssl::new(ctx)?;
+    // ssl.set_mtu(DATAGRAM_MTU as u32)?;
 
-    let eckey = EcKey::from_curve_name(DTLS_EC_CURVE)?;
-    ssl.set_tmp_ecdh(&eckey)?;
+    // let eckey = EcKey::from_curve_name(DTLS_EC_CURVE)?;
+    // ssl.set_tmp_ecdh(&eckey)?;
 
-    Ok(ssl)
+    // Ok(ssl)
 }

@@ -46,7 +46,7 @@ pub enum RtpError {
     /// Some error from Windows CNG layer (used for SRTP).
     #[error("{0}")]
     #[cfg(feature = "windows_cng")]
-    WindowsCng(#[from] openssl::error::ErrorStack),
+    WindowsCng(#[from] crate::crypto::windows_cng::CngError),
 
     /// Other IO errors.
     #[error("{0}")]

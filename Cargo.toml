@@ -28,7 +28,7 @@ default = ["windows_cng"]
 # default = ["openssl", "vendored", "sha1"]
 openssl = ["dep:openssl", "dep:openssl-sys", "dep:libc"]
 vendored = ["openssl?/vendored"]
-windows_cng = ["dep:windows", "dep:windows-strings", "dep:openssl", "dep:openssl-sys", "dep:libc"]
+windows_cng = ["dep:windows", "dep:windows-core", "dep:windows-strings", "dep:windows-result", "dep:openssl", "dep:openssl-sys", "dep:libc"]
 
 # Without the sha1 feature, str0m uses the openssl sha1 impl which is slower.
 sha1 = ["dep:sha1"]
@@ -55,8 +55,10 @@ crc = "3.0.0"
 serde = { version = "1.0.152", features = ["derive"] }
 
 # Windows CNG
-windows = { version = "0.58", features = ["Win32_Networking_WinHttp"], optional = true }
+windows = { version = "0.58", features=["Win32_Security_Cryptography"], optional = true }
+windows-core = { version = "0", optional = true }
 windows-strings = { version = "0", optional = true }
+windows-result = {version = "0.2", optional = true}
 
 [target.'cfg(unix)'.dependencies]
 sha1 = { version = "0.10.6", features = ["asm"], optional = true }

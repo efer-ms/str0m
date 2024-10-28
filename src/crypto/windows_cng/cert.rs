@@ -1,109 +1,164 @@
-use std::time::SystemTime;
-
-use openssl::asn1::{Asn1Integer, Asn1Time, Asn1Type};
-use openssl::bn::BigNum;
-use openssl::hash::MessageDigest;
-use openssl::nid::Nid;
-use openssl::pkey::{PKey, Private};
-use openssl::rsa::Rsa;
-use openssl::x509::{X509Name, X509};
-
+use super::{from_ntstatus_result, from_win_err, CngError, CryptoError};
 use crate::crypto::dtls::DTLS_CERT_IDENTITY;
 use crate::crypto::Fingerprint;
+use windows::{core::HSTRING, Win32::Security::Cryptography::*};
 
-use super::CryptoError;
-
-const RSA_F4: u32 = 0x10001;
-
-/// Certificate used for DTLS.
 #[derive(Debug, Clone)]
 pub struct CngDtlsCert {
-    pub(crate) pkey: PKey<Private>,
-    pub(crate) x509: X509,
+    pub(crate) _pkey: NCRYPT_KEY_HANDLE,
+    pub(crate) cert: CERT_CONTEXT,
 }
 
+unsafe impl Send for CngDtlsCert {}
+unsafe impl Sync for CngDtlsCert {}
+
 impl CngDtlsCert {
-    /// Creates a new (self signed) DTLS certificate.
     pub fn new() -> Self {
         Self::self_signed().expect("create dtls cert")
     }
 
-    // The libWebRTC code we try to match is at:
-    // https://webrtc.googlesource.com/src/+/1568f1b1330f94494197696fe235094e6293b258/rtc_base/openssl_certificate.cc#58
     fn self_signed() -> Result<Self, CryptoError> {
-        let f4 = BigNum::from_u32(RSA_F4).unwrap();
-        let key = Rsa::generate_with_e(2048, &f4)?;
-        let pkey = PKey::from_rsa(key)?;
+        unsafe {
+            let dn = HSTRING::from(format!("CN={}", DTLS_CERT_IDENTITY));
+            let mut name_blob = CRYPT_INTEGER_BLOB::default();
+            CertStrToNameW(
+                X509_ASN_ENCODING,
+                &dn,
+                CERT_OID_NAME_STR,
+                None,
+                None,
+                &mut name_blob.cbData,
+                None,
+            )
+            .map_err(from_win_err)?;
+            let mut name_vec = vec![0u8; name_blob.cbData as usize];
+            name_blob.pbData = name_vec.as_mut_ptr();
+            CertStrToNameW(
+                X509_ASN_ENCODING,
+                &dn,
+                CERT_OID_NAME_STR,
+                None,
+                Some(name_blob.pbData),
+                &mut name_blob.cbData,
+                None,
+            )
+            .map_err(from_win_err)?;
 
-        let mut x509b = X509::builder()?;
-        x509b.set_version(2)?; // X509.V3 (zero indexed)
+            let mut key_provider_info = CRYPT_KEY_PROV_INFO::default();
+            key_provider_info.dwFlags = CRYPT_KEY_FLAGS(NCRYPT_SILENT_FLAG.0);
+            key_provider_info.dwKeySpec = AT_KEYEXCHANGE.0;
 
-        // For Firefox, the serial number must be unique across all certificates, including those of other
-        // processes/machines! See https://github.com/versatica/mediasoup/issues/127#issuecomment-474460153
-        // and https://github.com/algesten/str0m/issues/517
-        let mut serial_buf = [0u8; 16];
-        openssl::rand::rand_bytes(&mut serial_buf)?;
+            let mut provider_handle = NCRYPT_PROV_HANDLE::default();
+            let mut key_handle = NCRYPT_KEY_HANDLE::default();
+            NCryptOpenStorageProvider(&mut provider_handle, None, 0).map_err(from_win_err)?;
+            NCryptCreatePersistedKey(
+                provider_handle,
+                &mut key_handle,
+                BCRYPT_RSA_ALGORITHM,
+                None,
+                AT_KEYEXCHANGE,
+                NCRYPT_FLAGS(0),
+            )
+            .map_err(from_win_err)?;
+            NCryptFinalizeKey(key_handle, NCRYPT_SILENT_FLAG).map_err(from_win_err)?;
+            let cert_context = CertCreateSelfSignCertificate(
+                HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(key_handle.0),
+                &name_blob,
+                CERT_CREATE_SELFSIGN_FLAGS(0),
+                Some(&key_provider_info),
+                None,
+                None,
+                None,
+                None,
+            );
 
-        let serial_bn = BigNum::from_slice(&serial_buf)?;
-        let serial = Asn1Integer::from_bn(&serial_bn)?;
-        x509b.set_serial_number(&serial)?;
-        let before = Asn1Time::from_unix(unix_time() - 3600)?;
-        x509b.set_not_before(&before)?;
-        let after = Asn1Time::days_from_now(7)?;
-        x509b.set_not_after(&after)?;
-        x509b.set_pubkey(&pkey)?;
-
-        // The libWebRTC code for this is:
-        //
-        // !X509_NAME_add_entry_by_NID(name.get(), NID_commonName, MBSTRING_UTF8,
-        // (unsigned char*)params.common_name.c_str(), -1, -1, 0) ||
-        //
-        // libWebRTC allows this name to be configured by the user of the library.
-        // That's a future TODO for str0m.
-        let mut nameb = X509Name::builder()?;
-        nameb.append_entry_by_nid_with_type(
-            Nid::COMMONNAME,
-            DTLS_CERT_IDENTITY,
-            Asn1Type::UTF8STRING,
-        )?;
-
-        let name = nameb.build();
-
-        x509b.set_subject_name(&name)?;
-        x509b.set_issuer_name(&name)?;
-
-        x509b.sign(&pkey, MessageDigest::sha1())?;
-        let x509 = x509b.build();
-
-        Ok(CngDtlsCert { pkey, x509 })
+            if cert_context.is_null() {
+                Err(CngError("Failed to generate self-signed certificate".to_string()).into())
+            } else {
+                Ok(Self {
+                    _pkey: key_handle,
+                    cert: *cert_context,
+                })
+            }
+        }
     }
 
-    /// Produce a (public) fingerprint of the cert.
-    ///
-    /// This is sent via SDP to the other peer to lock down the DTLS
-    /// to this specific certificate.
     pub fn fingerprint(&self) -> Fingerprint {
-        let digest: &[u8] = &self
-            .x509
-            .digest(MessageDigest::sha256())
-            .expect("digest to fingerprint");
+        unsafe {
+            let mut hash = [0u8; 32];
 
-        Fingerprint {
-            hash_func: "sha-256".into(),
-            bytes: digest.to_vec(),
+            let mut alg_handle = BCRYPT_ALG_HANDLE::default();
+            if let Err(e) = from_ntstatus_result(BCryptOpenAlgorithmProvider(
+                &mut alg_handle,
+                BCRYPT_SHA256_ALGORITHM,
+                None,
+                BCRYPT_ALG_HANDLE_HMAC_FLAG,
+            )) {
+                panic!("Failed to open algorithm provider: {e}");
+            }
+
+            let mut hash_object_size = [0u8; 4];
+            let mut hash_object_size_size: u32 = 4;
+            if let Err(e) = from_ntstatus_result(BCryptGetProperty(
+                alg_handle,
+                BCRYPT_OBJECT_LENGTH,
+                Some(&mut hash_object_size),
+                &mut hash_object_size_size,
+                0,
+            )) {
+                panic!("Failed to get crypt poperty: {e}");
+            }
+            let hash_object_len = std::mem::transmute::<[u8; 4], u32>(hash_object_size);
+            let mut hash_object = vec![0u8; hash_object_len as usize];
+
+            let mut hash_handle = BCRYPT_HASH_HANDLE::default();
+            if let Err(e) = from_ntstatus_result(BCryptCreateHash(
+                alg_handle,
+                &mut hash_handle,
+                Some(&mut hash_object),
+                None,
+                0,
+            )) {
+                panic!("Failed to create hash: {e}");
+            }
+
+            if let Err(e) = from_ntstatus_result(BCryptHashData(
+                hash_handle,
+                std::slice::from_raw_parts(
+                    self.cert.pbCertEncoded,
+                    self.cert.cbCertEncoded as usize,
+                ),
+                0,
+            )) {
+                panic!("Failed to hash data: {e}");
+            }
+
+            if let Err(e) = from_ntstatus_result(BCryptFinishHash(hash_handle, &mut hash, 0)) {
+                panic!("Failed to finish hash: {e}");
+            }
+
+            Fingerprint {
+                hash_func: "sha-256".into(),
+                bytes: hash.to_vec(),
+            }
         }
     }
 }
 
-// TODO: Refactor away this use of System::now, to instead go via InstantExt
-// and base the time on the first Instant. This would require lazy init of
-// Dtls, or that we pass a first ever Instant into the creation of Rtc.
-//
-// This is not a super high priority since it's only used for setting a before
-// time in the generated certificate, and one hour back from that.
-pub fn unix_time() -> libc::time_t {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as libc::time_t
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn make_cert() {
+        unsafe {
+            let cert = super::CngDtlsCert::new();
+            let cert_contents = std::slice::from_raw_parts(
+                cert.cert.pbCertEncoded,
+                cert.cert.cbCertEncoded as usize,
+            );
+            println!("Cert: {:02X?}", cert_contents);
+            println!("Encoding Type: {:#?}", cert.cert.dwCertEncodingType);
+            let fingerprint = cert.fingerprint();
+            println!("Fingerprint: {:02X?}", fingerprint);
+        }
+    }
 }

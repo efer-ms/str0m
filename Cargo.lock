@@ -944,6 +944,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows",
+ "windows-core 0.52.0",
+ "windows-result",
  "windows-strings 0.2.0",
 ]
 

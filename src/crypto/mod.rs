@@ -7,7 +7,7 @@ use thiserror::Error;
 mod ossl;
 
 #[cfg(feature = "windows_cng")]
-mod windows_cng;
+pub mod windows_cng;
 
 mod dtls;
 pub use dtls::{DtlsCert, DtlsEvent, DtlsImpl};
@@ -88,7 +88,7 @@ pub enum CryptoError {
     /// Some error from OpenSSL layer (used for DTLS).
     #[error("{0}")]
     #[cfg(feature = "windows_cng")]
-    WindowsCng(#[from] openssl::error::ErrorStack),
+    WindowsCng(#[from] windows_cng::CngError),
 
     /// Other IO errors.
     #[error("{0}")]

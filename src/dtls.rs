@@ -19,7 +19,7 @@ pub enum DtlsError {
     /// Some error from Windows CNG layer (used for DTLS).
     #[error("{0}")]
     #[cfg(feature = "windows_cng")]
-    WindowsCng(#[from] openssl::error::ErrorStack),
+    WindowsCng(#[from] crate::crypto::windows_cng::CngError),
 
     /// Other IO errors.
     #[error("{0}")]
