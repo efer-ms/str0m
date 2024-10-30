@@ -5,7 +5,7 @@ use windows::{core::HSTRING, Win32::Security::Cryptography::*};
 
 #[derive(Debug, Clone)]
 pub struct CngDtlsCert {
-    pub(crate) _pkey: NCRYPT_KEY_HANDLE,
+    pub(crate) pkey: NCRYPT_KEY_HANDLE,
     pub(crate) cert: CERT_CONTEXT,
 }
 
@@ -76,7 +76,7 @@ impl CngDtlsCert {
                 Err(CngError("Failed to generate self-signed certificate".to_string()).into())
             } else {
                 Ok(Self {
-                    _pkey: key_handle,
+                    pkey: key_handle,
                     cert: *cert_context,
                 })
             }

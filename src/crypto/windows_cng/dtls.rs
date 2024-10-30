@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use openssl::ec::EcKey;
 use openssl::nid::Nid;
 use openssl::ssl::{Ssl, SslContext, SslContextBuilder, SslMethod, SslOptions, SslVerifyMode};
+use windows::{core::HSTRING, Win32::Security::Cryptography::*};
 
 use crate::crypto::dtls::DtlsInner;
 use crate::crypto::{DtlsEvent, SrtpProfile};
