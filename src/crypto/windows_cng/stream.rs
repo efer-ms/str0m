@@ -26,6 +26,9 @@ pub enum State<S> {
     Empty,
 }
 
+// Need to port this:
+// https://gist.github.com/haddoncd/381c5e9542e977ca238ff16229bd9a0e/c881132ced94995402b617f38a5c8b6f8669b637
+
 /// This is okay because there is no way for a user of Rtc to interact with the Dtls subsystem
 /// in a way that would allow them to observe a potentially broken invariant when catching a panic.
 impl<S> UnwindSafe for State<S> {}
