@@ -28,7 +28,7 @@ default = ["windows_cng"]
 # default = ["openssl", "vendored", "sha1"]
 openssl = ["dep:openssl", "dep:openssl-sys", "dep:libc"]
 vendored = ["openssl?/vendored"]
-windows_cng = ["dep:windows", "dep:windows-core", "dep:windows-strings", "dep:windows-result", "dep:openssl", "dep:openssl-sys", "dep:libc"]
+windows_cng = ["dep:windows", "dep:windows-core", "dep:windows-strings", "dep:windows-result"]
 
 # Without the sha1 feature, str0m uses the openssl sha1 impl which is slower.
 sha1 = ["dep:sha1"]
@@ -69,7 +69,7 @@ sha1 = { version = "0.10.6", features = ["asm"], optional = true }
 sha1 = { version = "0.10.6", optional = true }
 
 [dev-dependencies]
-rouille = { version = "3.5.0", features = ["ssl"] }
+rouille = { version = "3.5.0", features = [] }
 serde_json = "1.0"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter", "std"] }
 systemstat = "0.2.2"

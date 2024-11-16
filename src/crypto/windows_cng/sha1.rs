@@ -6,13 +6,11 @@ use windows::Win32::Security::Cryptography::{
 
 pub fn sha1_hmac(key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
     unsafe {
-        // TODO(efer): Verify 1024 is a reasonable size. Seems unreasonable to always ask, this should be a fixed size for the algorithm.
-        let mut hash_object = [0u8; 1024];
         let mut hash_handle = BCRYPT_HASH_HANDLE::default();
         if let Err(e) = from_ntstatus_result(BCryptCreateHash(
             BCRYPT_HMAC_SHA1_ALG_HANDLE,
             &mut hash_handle,
-            Some(&mut hash_object),
+            None,
             Some(key),
             0,
         )) {
