@@ -14,6 +14,9 @@ pub use dtls::CngDtlsImpl;
 mod srtp;
 pub use srtp::CngSrtpCryptoImpl;
 
+mod sha1;
+pub use sha1::sha1_hmac;
+
 use thiserror::Error;
 use windows::Win32::Foundation::NTSTATUS;
 

@@ -61,20 +61,7 @@ pub fn sha1_hmac(key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
 /// If openssl is enabled and sha1 is not, it uses `openssl` crate.
 #[cfg(all(feature = "windows_cng", not(feature = "sha1")))]
 pub fn sha1_hmac(key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
-    use openssl::hash::MessageDigest;
-    use openssl::pkey::PKey;
-    use openssl::sign::Signer;
-
-    let key = PKey::hmac(key).expect("valid hmac key");
-    let mut signer = Signer::new(MessageDigest::sha1(), &key).expect("valid signer");
-
-    for payload in payloads {
-        signer.update(payload).expect("signer update");
-    }
-
-    let mut hash = [0u8; 20];
-    signer.sign(&mut hash).expect("sign to array");
-    hash
+    windows_cng::sha1_hmac(key, payloads)
 }
 
 /// Errors that can arise in DTLS.

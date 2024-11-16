@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 
-use openssl::ec::EcKey;
-use openssl::nid::Nid;
-use openssl::ssl::{Ssl, SslContext, SslContextBuilder, SslMethod, SslOptions, SslVerifyMode};
+// use openssl::ec::EcKey;
+// use openssl::nid::Nid;
+// use openssl::ssl::{Ssl, SslContext, SslContextBuilder, SslMethod, SslOptions, SslVerifyMode};
 use windows::{core::HSTRING, Win32::Security::Cryptography::*};
 
 use crate::crypto::dtls::DtlsInner;
@@ -17,7 +17,7 @@ use super::stream::TlsStream;
 use super::CryptoError;
 
 const DTLS_CIPHERS: &str = "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
-const DTLS_EC_CURVE: Nid = Nid::X9_62_PRIME256V1;
+// const DTLS_EC_CURVE: Nid = Nid::X9_62_PRIME256V1;
 
 pub struct CngDtlsImpl {
     /// Certificate for the DTLS session.
@@ -27,7 +27,7 @@ pub struct CngDtlsImpl {
     ///
     /// This just needs to be kept alive since it pins the entire openssl context
     /// from which `Ssl` is created.
-    _context: SslContext,
+    // _context: SslContext,
 
     /// The actual openssl TLS stream.
     tls: TlsStream<IoBuffer>,
@@ -35,13 +35,14 @@ pub struct CngDtlsImpl {
 
 impl CngDtlsImpl {
     pub fn new(cert: CngDtlsCert) -> Result<Self, super::CryptoError> {
-        let context = dtls_create_ctx(&cert)?;
-        let ssl = dtls_ssl_create(&context)?;
-        Ok(CngDtlsImpl {
-            _cert: cert,
-            _context: context,
-            tls: TlsStream::new(ssl, IoBuffer::default()),
-        })
+        // let context = dtls_create_ctx(&cert)?;
+        // let ssl = dtls_ssl_create(&context)?;
+        // Ok(CngDtlsImpl {
+        //     _cert: cert,
+        //     // _context: context,
+        //     tls: TlsStream::new(ssl, IoBuffer::default()),
+        // })
+        panic!("Not impl!");
     }
 }
 
@@ -130,6 +131,8 @@ impl DtlsInner for CngDtlsImpl {
     }
 }
 
+struct SslContext {}
+
 pub fn dtls_create_ctx(cert: &CngDtlsCert) -> Result<SslContext, CryptoError> {
     // // TODO: Technically we want to disallow DTLS < 1.2, but that requires
     // // us to use this commented out unsafe. We depend on browsers disallowing
@@ -168,6 +171,8 @@ pub fn dtls_create_ctx(cert: &CngDtlsCert) -> Result<SslContext, CryptoError> {
     // Ok(ctx)
     panic!("Not impl!");
 }
+
+struct Ssl {}
 
 pub fn dtls_ssl_create(ctx: &SslContext) -> Result<Ssl, CryptoError> {
     panic!("Not impl!");
