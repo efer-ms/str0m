@@ -297,6 +297,8 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
 
             let (cipher_text, tag) = input.split_at(input.len() - aead_aes_128_gcm::TAG_LEN);
 
+            // TODO(efer): Optimize this, we shouldn't need a vec, only need it when
+            // we have multiple aad slices, otherwise should just use aads[0].
             let aad = if aads.len() == 1 {
                 &aads[0].to_vec()
             } else {
