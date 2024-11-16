@@ -7,7 +7,7 @@ use crate::crypto::CryptoError;
 use windows::core::PCWSTR;
 use windows::Win32::Security::Cryptography::{
     BCryptDecrypt, BCryptEncrypt, BCryptGenerateSymmetricKey, BCryptOpenAlgorithmProvider,
-    BCryptSetProperty, BCRYPT_AES_ALGORITHM, BCRYPT_ALG_HANDLE,
+    BCryptSetProperty, BCRYPT_AES_ALGORITHM, BCRYPT_AES_ECB_ALG_HANDLE, BCRYPT_ALG_HANDLE,
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO, BCRYPT_BLOCK_LENGTH, BCRYPT_BLOCK_PADDING,
     BCRYPT_CHAINING_MODE, BCRYPT_CHAIN_MODE_CBC, BCRYPT_CHAIN_MODE_ECB, BCRYPT_CHAIN_MODE_GCM,
     BCRYPT_FLAGS, BCRYPT_KEY_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
@@ -22,26 +22,9 @@ impl SrtpCryptoImpl for CngSrtpCryptoImpl {
     fn srtp_aes_128_ecb_round(key: &[u8], input: &[u8], output: &mut [u8]) {
         unsafe {
             // let mut aes = Crypter::new(Cipher::aes_128_ecb(), Mode::Encrypt, key, None);
-            let mut alg_handle = BCRYPT_ALG_HANDLE::default();
-            from_ntstatus_result(BCryptOpenAlgorithmProvider(
-                &mut alg_handle,
-                PCWSTR(BCRYPT_AES_ALGORITHM.as_ptr()),
-                None,
-                BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS(0),
-            ))
-            .expect("AES provider");
-
-            from_ntstatus_result(BCryptSetProperty(
-                alg_handle.into(),
-                PCWSTR(BCRYPT_CHAIN_MODE_ECB.as_ptr()),
-                &[],
-                0,
-            ))
-            .expect("AES configured");
-
             let mut key_handle = BCRYPT_KEY_HANDLE::default();
             from_ntstatus_result(BCryptGenerateSymmetricKey(
-                alg_handle,
+                BCRYPT_AES_ECB_ALG_HANDLE,
                 &mut key_handle,
                 None,
                 key,
@@ -96,7 +79,7 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
             ))
             .expect("alg provider");
             // TODO(efer): CTR mode doesn't exist in CNG need to understand how to configure it
-            let chain_mode = BCRYPT_CHAIN_MODE_CBC.as_wide();
+            let chain_mode = BCRYPT_CHAIN_MODE_ECB.as_wide();
             let chain_mode =
                 std::slice::from_raw_parts(chain_mode.as_ptr() as *const u8, chain_mode.len() * 2);
             from_ntstatus_result(BCryptSetProperty(
@@ -399,5 +382,71 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
 
             Ok(final_count as usize)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_srtp_aes_128_ecb_round_test_vec_1() {
+        let mut out = [0u8; 32];
+        CngSrtpCryptoImpl::srtp_aes_128_ecb_round(
+            &hex_to_vec("2b7e151628aed2a6abf7158809cf4f3c"),
+            &hex_to_vec("6bc1bee22e409f96e93d7e117393172a"),
+            &mut out,
+        );
+        assert_eq!(slice_to_hex(&out[..16]), "3ad77bb40d7a3660a89ecaf32466ef97");
+    }
+
+    #[test]
+    fn test_srtp_aes_128_ecb_round_test_vec_2() {
+        let mut out = [0u8; 32];
+        CngSrtpCryptoImpl::srtp_aes_128_ecb_round(
+            &hex_to_vec("2b7e151628aed2a6abf7158809cf4f3c"),
+            &hex_to_vec("ae2d8a571e03ac9c9eb76fac45af8e51"),
+            &mut out,
+        );
+        assert_eq!(slice_to_hex(&out[..16]), "f5d3d58503b9699de785895a96fdbaaf");
+    }
+
+    #[test]
+    fn test_srtp_aes_128_ecb_round_test_vec_3() {
+        let mut out = [0u8; 32];
+        CngSrtpCryptoImpl::srtp_aes_128_ecb_round(
+            &hex_to_vec("2b7e151628aed2a6abf7158809cf4f3c"),
+            &hex_to_vec("30c81c46a35ce411e5fbc1191a0a52ef"),
+            &mut out,
+        );
+        assert_eq!(slice_to_hex(&out[..16]), "43b1cd7f598ece23881b00e3ed030688");
+    }
+
+    #[test]
+    fn test_srtp_aes_128_ecb_round_test_vec_4() {
+        let mut out = [0u8; 32];
+        CngSrtpCryptoImpl::srtp_aes_128_ecb_round(
+            &hex_to_vec("2b7e151628aed2a6abf7158809cf4f3c"),
+            &hex_to_vec("f69f2445df4f9b17ad2b417be66c3710"),
+            &mut out,
+        );
+        assert_eq!(slice_to_hex(&out[..16]), "7b0c785e27e8ad3f8223207104725dd4");
+    }
+
+    fn slice_to_hex(hash: &[u8]) -> String {
+        let mut s = String::new();
+        for byte in hash.iter() {
+            s.push_str(&format!("{:02x}", byte));
+        }
+        s
+    }
+
+    fn hex_to_vec(hex: &str) -> Vec<u8> {
+        let mut v = Vec::new();
+        for i in 0..hex.len() / 2 {
+            let byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+            v.push(byte);
+        }
+        v
     }
 }
