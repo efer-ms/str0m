@@ -8,7 +8,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Security::Cryptography::{
     BCryptDecrypt, BCryptEncrypt, BCryptGenerateSymmetricKey, BCryptOpenAlgorithmProvider,
     BCryptSetProperty, BCRYPT_AES_ALGORITHM, BCRYPT_AES_ECB_ALG_HANDLE, BCRYPT_ALG_HANDLE,
-    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO, BCRYPT_BLOCK_LENGTH, BCRYPT_BLOCK_PADDING,
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO, BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+    BCRYPT_AUTH_MODE_CHAIN_CALLS_FLAG, BCRYPT_BLOCK_LENGTH, BCRYPT_BLOCK_PADDING,
     BCRYPT_CHAINING_MODE, BCRYPT_CHAIN_MODE_CBC, BCRYPT_CHAIN_MODE_ECB, BCRYPT_CHAIN_MODE_GCM,
     BCRYPT_FLAGS, BCRYPT_KEY_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
 };
@@ -203,15 +204,17 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
                 0,
             ))
             .expect("set chain mode");
-            let iv_len: u32 = aead_aes_128_gcm::IV_LEN as u32;
-            let iv_len_ptr = std::slice::from_raw_parts(std::ptr::addr_of!(iv_len) as *const u8, 4);
-            from_ntstatus_result(BCryptSetProperty(
-                alg_handle.into(),
-                BCRYPT_BLOCK_LENGTH,
-                iv_len_ptr,
-                0,
-            ))
-            .expect("set iv/block length");
+
+            // let iv_len: u32 = aead_aes_128_gcm::IV_LEN as u32;
+            // let iv_len_ptr = std::slice::from_raw_parts(std::ptr::addr_of!(iv_len) as *const u8, 4);
+            // from_ntstatus_result(BCryptSetProperty(
+            //     alg_handle.into(),
+            //     BCRYPT_BLOCK_LENGTH,
+            //     iv_len_ptr,
+            //     0,
+            // ))
+            // .expect("set iv/block length");
+
             // if encrypt {
             //     ctx.encrypt_init(Some(t), Some(&key), None)
             //         .expect("enc init");
@@ -254,58 +257,26 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
                 "Associated data length MUST be at least 12 octets"
             );
 
-            // Set the IV
-            // self.0.encrypt_init(None, None, Some(iv)).unwrap();
-            let mut iv = iv.clone();
+            let aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+                pbAuthData: aad.as_ptr() as *mut u8,
+                cbAuthData: aad.len() as u32,
+                dwInfoVersion: BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+                cbSize: std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+                pbTag: output[input.len()..].as_ptr() as *mut u8,
+                cbTag: aead_aes_128_gcm::TAG_LEN as u32,
+                pbNonce: iv.as_ptr() as *mut u8,
+                cbNonce: iv.len() as u32,
+                ..Default::default()
+            };
 
-            // Add the additional authenticated data, omitting the output argument informs
-            // Crypto that we are providing AAD.
-            // let aad_c = self.0.cipher_update(aad, None).unwrap();
-            let mut aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
-            aad_info.pbAuthData = aad.as_ptr() as *mut u8;
-            aad_info.cbAuthData = aad.len() as u32;
-
-            let mut count = 0;
-            from_ntstatus_result(BCryptEncrypt(
-                self.key_handle,
-                None,
-                Some(addr_of!(aad_info) as *const std::ffi::c_void),
-                Some(&mut iv),
-                None,
-                &mut count,
-                BCRYPT_FLAGS(0),
-            ))?;
-            // TODO: This should maybe be an error
-            assert!(count as usize == aad.len());
-
-            // let count = self.0.cipher_update(input, Some(output)).unwrap();
-            // let final_count = self.0.cipher_final(&mut output[count..]).unwrap();
-            let mut final_count = 0;
+            let mut _count = 0;
             from_ntstatus_result(BCryptEncrypt(
                 self.key_handle,
                 Some(input),
-                None,
-                Some(&mut iv),
-                Some(output),
-                &mut final_count,
-                BCRYPT_FLAGS(0),
-            ))?;
-
-            // Get the authentication tag and append it to the output
-            // self.0
-            //     .tag(&mut output[tag_offset..tag_offset + aead_aes_128_gcm::TAG_LEN])
-            //     .unwrap();
-            let tag_offset = count + final_count;
-            let mut aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
-            aad_info.pbTag = output[tag_offset as usize..].as_ptr() as *mut u8;
-            aad_info.cbTag = aead_aes_128_gcm::TAG_LEN as u32;
-            from_ntstatus_result(BCryptEncrypt(
-                self.key_handle,
-                None,
                 Some(addr_of!(aad_info) as *const std::ffi::c_void),
-                Some(&mut iv),
                 None,
-                &mut count,
+                Some(output),
+                &mut _count,
                 BCRYPT_FLAGS(0),
             ))?;
 
@@ -326,61 +297,90 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
 
             let (cipher_text, tag) = input.split_at(input.len() - aead_aes_128_gcm::TAG_LEN);
 
-            // self.0.decrypt_init(None, None, Some(iv)).unwrap();
-            let mut iv = iv.clone();
+            let aad = if aads.len() == 1 {
+                &aads[0].to_vec()
+            } else {
+                &aads.concat()
+            };
 
-            // Add the additional authenticated data, omitting the output argument informs
-            // OpenSSL that we are providing AAD.
-            // With this the authentication tag will be verified.
-            for aad in aads {
-                //self.0.cipher_update(aad, None).unwrap();
-                let mut aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
-                aad_info.pbAuthData = aad.as_ptr() as *mut u8;
-                aad_info.cbAuthData = aad.len() as u32;
+            let aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+                pbAuthData: aad.as_ptr() as *mut u8,
+                cbAuthData: aad.len() as u32,
+                dwInfoVersion: BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+                cbSize: std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+                pbTag: tag.as_ptr() as *mut u8,
+                cbTag: aead_aes_128_gcm::TAG_LEN as u32,
+                pbNonce: iv.as_ptr() as *mut u8,
+                cbNonce: iv.len() as u32,
+                ..Default::default()
+            };
 
-                let mut count = 0;
-                from_ntstatus_result(BCryptDecrypt(
-                    self.key_handle,
-                    None,
-                    Some(addr_of!(aad_info) as *const std::ffi::c_void),
-                    Some(&mut iv),
-                    None,
-                    &mut count,
-                    BCRYPT_FLAGS(0),
-                ))?;
-                // TODO: This should maybe be an error
-                assert!(count as usize == aad.len());
-            }
-
-            // self.0.set_tag(tag).unwrap();
             let mut count = 0;
-            let mut aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
-            aad_info.pbTag = tag.as_ptr() as *mut u8;
-            aad_info.cbTag = tag.len() as u32;
             from_ntstatus_result(BCryptDecrypt(
                 self.key_handle,
-                None,
+                Some(cipher_text),
                 Some(addr_of!(aad_info) as *const std::ffi::c_void),
-                Some(&mut iv),
                 None,
+                Some(output),
                 &mut count,
                 BCRYPT_FLAGS(0),
             ))?;
 
-            // let count = self.0.cipher_update(cipher_text, Some(output)).unwrap();
-            // let final_count = self.0.cipher_final(&mut output[count..]).unwrap();
-            let mut final_count = 0;
-            from_ntstatus_result(BCryptDecrypt(
-                self.key_handle,
-                Some(cipher_text),
-                None,
-                Some(&mut iv),
-                Some(output),
-                &mut final_count,
-                BCRYPT_FLAGS(0),
-            ))?;
+            // // self.0.decrypt_init(None, None, Some(iv)).unwrap();
+            // let mut iv = iv.clone();
 
-            Ok(final_count as usize)
+            // // Add the additional authenticated data, omitting the output argument informs
+            // // OpenSSL that we are providing AAD.
+            // // With this the authentication tag will be verified.
+            // for aad in aads {
+            //     //self.0.cipher_update(aad, None).unwrap();
+            //     let mut aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
+            //     aad_info.pbAuthData = aad.as_ptr() as *mut u8;
+            //     aad_info.cbAuthData = aad.len() as u32;
+
+            //     let mut count = 0;
+            //     from_ntstatus_result(BCryptDecrypt(
+            //         self.key_handle,
+            //         None,
+            //         Some(addr_of!(aad_info) as *const std::ffi::c_void),
+            //         Some(&mut iv),
+            //         None,
+            //         &mut count,
+            //         BCRYPT_FLAGS(0),
+            //     ))?;
+            //     // TODO: This should maybe be an error
+            //     assert!(count as usize == aad.len());
+            // }
+
+            // // self.0.set_tag(tag).unwrap();
+            // let mut count = 0;
+            // let mut aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
+            // aad_info.pbTag = tag.as_ptr() as *mut u8;
+            // aad_info.cbTag = tag.len() as u32;
+            // from_ntstatus_result(BCryptDecrypt(
+            //     self.key_handle,
+            //     None,
+            //     Some(addr_of!(aad_info) as *const std::ffi::c_void),
+            //     Some(&mut iv),
+            //     None,
+            //     &mut count,
+            //     BCRYPT_FLAGS(0),
+            // ))?;
+
+            // // let count = self.0.cipher_update(cipher_text, Some(output)).unwrap();
+            // // let final_count = self.0.cipher_final(&mut output[count..]).unwrap();
+            // let mut final_count = 0;
+            // from_ntstatus_result(BCryptDecrypt(
+            //     self.key_handle,
+            //     Some(cipher_text),
+            //     None,
+            //     Some(&mut iv),
+            //     Some(output),
+            //     &mut final_count,
+            //     BCRYPT_FLAGS(0),
+            // ))?;
+
+            Ok(count as usize)
         }
     }
 }
