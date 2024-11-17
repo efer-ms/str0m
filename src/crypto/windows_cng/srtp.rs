@@ -4,13 +4,11 @@ use crate::crypto::srtp::SrtpCryptoImpl;
 use crate::crypto::srtp::{aead_aes_128_gcm, aes_128_cm_sha1_80};
 use crate::crypto::windows_cng::from_ntstatus_result;
 use crate::crypto::CryptoError;
-use windows::core::PCWSTR;
 use windows::Win32::Security::Cryptography::{
-    BCryptDecrypt, BCryptEncrypt, BCryptGenerateSymmetricKey, BCryptOpenAlgorithmProvider,
-    BCryptSetProperty, BCRYPT_AES_ALGORITHM, BCRYPT_AES_ECB_ALG_HANDLE, BCRYPT_AES_GCM_ALG_HANDLE,
-    BCRYPT_ALG_HANDLE, BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO,
-    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION, BCRYPT_BLOCK_PADDING, BCRYPT_CHAINING_MODE,
-    BCRYPT_CHAIN_MODE_ECB, BCRYPT_FLAGS, BCRYPT_KEY_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
+    BCryptDecrypt, BCryptEncrypt, BCryptGenerateSymmetricKey, BCRYPT_AES_ECB_ALG_HANDLE,
+    BCRYPT_AES_GCM_ALG_HANDLE, BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO,
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION, BCRYPT_BLOCK_PADDING, BCRYPT_FLAGS,
+    BCRYPT_KEY_HANDLE,
 };
 
 pub struct CngSrtpCryptoImpl;
@@ -57,6 +55,11 @@ unsafe impl Send for CngAes128CmSha1_80 {}
 unsafe impl Sync for CngAes128CmSha1_80 {}
 
 impl CngAes128CmSha1_80 {
+    /// Encrypts or decrypts the input data using AES-128 in ECB-CTR mode. CTR mode essentially
+    /// amounts to encrypting the a buffer with a repeated IV, each repetition incrementing the IV
+    /// value by one. The encryption is using ECB mode. Then the encrypted output is XORed with the
+    /// input data. So encryption reads something like this: `ciphertext = AES(key, IV) XOR plaintext`.
+    /// Since XOR is symmetric, decryption is the same operation (`plaintext = AEX(key, IV) XOR ciphertext`).
     fn transform(
         &mut self,
         iv: &aes_128_cm_sha1_80::RtpIv,
@@ -67,6 +70,9 @@ impl CngAes128CmSha1_80 {
         unsafe {
             // TODO(efer): This could be optimized, by filling an intermediate buffer with the IV
             // incrementing by 1 each time, then executing the BCryptEncrypt once with the IV data.
+            // Since the packets are "small", we should probably just allocate the scratch space on
+            // the stack. Copy the IV to the stack, then increment the counters in the repetitions.
+            // The encrypt the IV buffer, into the output, and finally XOR with the input.
             let mut offset = 0;
             while offset < input.len() {
                 let mut _count = 0;
@@ -102,7 +108,11 @@ impl CngAes128CmSha1_80 {
 }
 
 impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
-    fn new(key: aes_128_cm_sha1_80::AesKey, encrypt: bool) -> Self
+    /// Create a new context for AES-128-CM-SHA1-80 encryption/decryption.
+    ///
+    /// The encrypt flag is ignored, since the same operation is used for both encryption and
+    /// decryption.
+    fn new(key: aes_128_cm_sha1_80::AesKey, _encrypt: bool) -> Self
     where
         Self: Sized,
     {
@@ -123,19 +133,19 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
     fn encrypt(
         &mut self,
         iv: &aes_128_cm_sha1_80::RtpIv,
-        input: &[u8],
-        output: &mut [u8],
+        plain_text: &[u8],
+        cipher_text: &mut [u8],
     ) -> Result<(), CryptoError> {
-        self.transform(iv, input, output)
+        self.transform(iv, plain_text, cipher_text)
     }
 
     fn decrypt(
         &mut self,
         iv: &aes_128_cm_sha1_80::RtpIv,
-        input: &[u8],
-        output: &mut [u8],
+        cipher_text: &[u8],
+        plain_text: &mut [u8],
     ) -> Result<(), CryptoError> {
-        self.transform(iv, input, output)
+        self.transform(iv, cipher_text, plain_text)
     }
 }
 
@@ -147,6 +157,10 @@ unsafe impl Send for CngAeadAes128Gcm {}
 unsafe impl Sync for CngAeadAes128Gcm {}
 
 impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
+    /// Create a new context for AES-128-GCM encryption/decryption.
+    ///
+    /// The encrypt flag is ignored, since it is not needed and the same
+    /// key can be used for both encryption and decryption.
     fn new(key: aead_aes_128_gcm::AeadKey, _encrypt: bool) -> Self
     where
         Self: Sized,
@@ -169,22 +183,22 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
     fn encrypt(
         &mut self,
         iv: &[u8; aead_aes_128_gcm::IV_LEN],
-        aad: &[u8],
-        input: &[u8],
-        output: &mut [u8],
+        additional_auth_data: &[u8],
+        plain_text: &[u8],
+        cipher_text: &mut [u8],
     ) -> Result<(), CryptoError> {
         unsafe {
             assert!(
-                aad.len() >= 12,
+                additional_auth_data.len() >= 12,
                 "Associated data length MUST be at least 12 octets"
             );
 
-            let aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
-                pbAuthData: aad.as_ptr() as *mut u8,
-                cbAuthData: aad.len() as u32,
+            let auth_cipher_mode_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+                pbAuthData: additional_auth_data.as_ptr() as *mut u8,
+                cbAuthData: additional_auth_data.len() as u32,
                 dwInfoVersion: BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
                 cbSize: std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
-                pbTag: output[input.len()..].as_ptr() as *mut u8,
+                pbTag: cipher_text[plain_text.len()..].as_ptr() as *mut u8,
                 cbTag: aead_aes_128_gcm::TAG_LEN as u32,
                 pbNonce: iv.as_ptr() as *mut u8,
                 cbNonce: iv.len() as u32,
@@ -194,10 +208,10 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
             let mut _count = 0;
             from_ntstatus_result(BCryptEncrypt(
                 self.key_handle,
-                Some(input),
-                Some(addr_of!(aad_info) as *const std::ffi::c_void),
+                Some(plain_text),
+                Some(addr_of!(auth_cipher_mode_info) as *const std::ffi::c_void),
                 None,
-                Some(output),
+                Some(cipher_text),
                 &mut _count,
                 BCRYPT_FLAGS(0),
             ))?;
@@ -209,27 +223,28 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
     fn decrypt(
         &mut self,
         iv: &[u8; aead_aes_128_gcm::IV_LEN],
-        aads: &[&[u8]],
-        input: &[u8],
-        output: &mut [u8],
+        additional_auth_data: &[&[u8]],
+        cipher_text: &[u8],
+        plaint_text: &mut [u8],
     ) -> Result<usize, CryptoError> {
         unsafe {
             // This needs to be converted to an error maybe
-            assert!(input.len() >= aead_aes_128_gcm::TAG_LEN);
+            assert!(cipher_text.len() >= aead_aes_128_gcm::TAG_LEN);
 
-            let (cipher_text, tag) = input.split_at(input.len() - aead_aes_128_gcm::TAG_LEN);
+            let (cipher_text, tag) =
+                cipher_text.split_at(cipher_text.len() - aead_aes_128_gcm::TAG_LEN);
 
             // TODO(efer): Optimize this, we shouldn't need a vec, only need it when
             // we have multiple aad slices, otherwise should just use aads[0].
-            let aad = if aads.len() == 1 {
-                &aads[0].to_vec()
+            let additional_auth_data = if additional_auth_data.len() == 1 {
+                &additional_auth_data[0].to_vec()
             } else {
-                &aads.concat()
+                &additional_auth_data.concat()
             };
 
-            let aad_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
-                pbAuthData: aad.as_ptr() as *mut u8,
-                cbAuthData: aad.len() as u32,
+            let auth_cipher_mode_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+                pbAuthData: additional_auth_data.as_ptr() as *mut u8,
+                cbAuthData: additional_auth_data.len() as u32,
                 dwInfoVersion: BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
                 cbSize: std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
                 pbTag: tag.as_ptr() as *mut u8,
@@ -243,9 +258,9 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
             from_ntstatus_result(BCryptDecrypt(
                 self.key_handle,
                 Some(cipher_text),
-                Some(addr_of!(aad_info) as *const std::ffi::c_void),
+                Some(addr_of!(auth_cipher_mode_info) as *const std::ffi::c_void),
                 None,
-                Some(output),
+                Some(plaint_text),
                 &mut count,
                 BCRYPT_FLAGS(0),
             ))?;
