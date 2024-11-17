@@ -50,13 +50,56 @@ impl SrtpCryptoImpl for CngSrtpCryptoImpl {
 }
 
 pub struct CngAes128CmSha1_80 {
-    _alg_handle: BCRYPT_ALG_HANDLE,
     key_handle: BCRYPT_KEY_HANDLE,
-    _encrypt: bool,
 }
 
 unsafe impl Send for CngAes128CmSha1_80 {}
 unsafe impl Sync for CngAes128CmSha1_80 {}
+
+impl CngAes128CmSha1_80 {
+    fn transform(
+        &mut self,
+        iv: &aes_128_cm_sha1_80::RtpIv,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<(), CryptoError> {
+        let mut iv = iv.clone();
+        unsafe {
+            // TODO(efer): This could be optimized, by filling an intermediate buffer with the IV
+            // incrementing by 1 each time, then executing the BCryptEncrypt once with the IV data.
+            let mut offset = 0;
+            while offset < input.len() {
+                let mut _count = 0;
+                from_ntstatus_result(BCryptEncrypt(
+                    self.key_handle,
+                    Some(iv.as_slice()),
+                    None,
+                    None,
+                    Some(&mut output[offset..offset + 16]),
+                    &mut _count,
+                    BCRYPT_FLAGS(0),
+                ))?;
+                offset += 16;
+                for idx in 0..16 {
+                    let n = iv[15 - idx];
+                    if n == 0xff {
+                        iv[15 - idx] = 0;
+                    } else {
+                        iv[15 - idx] += 1;
+                        break;
+                    }
+                }
+            }
+
+            // XOR the output with the input
+            for i in 0..input.len() {
+                output[i] = input[i] ^ output[i];
+            }
+
+            Ok(())
+        }
+    }
+}
 
 impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
     fn new(key: aes_128_cm_sha1_80::AesKey, encrypt: bool) -> Self
@@ -64,50 +107,16 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
         Self: Sized,
     {
         unsafe {
-            // let t = cipher::Cipher::aes_128_ctr();
-            // let mut ctx = CipherCtx::new().expect("a reusable cipher context");
-            let mut alg_handle = BCRYPT_ALG_HANDLE::default();
-            from_ntstatus_result(BCryptOpenAlgorithmProvider(
-                &mut alg_handle,
-                PCWSTR(BCRYPT_AES_ALGORITHM.as_ptr()),
-                None,
-                BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS(0),
-            ))
-            .expect("alg provider");
-            // TODO(efer): CTR mode doesn't exist in CNG need to understand how to configure it
-            let chain_mode = BCRYPT_CHAIN_MODE_ECB.as_wide();
-            let chain_mode =
-                std::slice::from_raw_parts(chain_mode.as_ptr() as *const u8, chain_mode.len() * 2);
-            from_ntstatus_result(BCryptSetProperty(
-                alg_handle.into(),
-                BCRYPT_CHAINING_MODE,
-                chain_mode,
-                0,
-            ))
-            .expect("set chain mode");
-            // if encrypt {
-            //     ctx.encrypt_init(Some(t), Some(&key[..]), None)
-            //         .expect("enc init");
-            // } else {
-            //     ctx.decrypt_init(Some(t), Some(&key[..]), None)
-            //         .expect("enc init");
-            // }
             let mut key_handle = BCRYPT_KEY_HANDLE::default();
             from_ntstatus_result(BCryptGenerateSymmetricKey(
-                alg_handle,
+                BCRYPT_AES_ECB_ALG_HANDLE,
                 &mut key_handle,
                 None,
                 &key,
                 0,
             ))
             .expect("generate sym key");
-
-            // CngAes128CmSha1_80(ctx)
-            CngAes128CmSha1_80 {
-                _alg_handle: alg_handle,
-                key_handle,
-                _encrypt: encrypt,
-            }
+            CngAes128CmSha1_80 { key_handle }
         }
     }
 
@@ -117,24 +126,7 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<(), CryptoError> {
-        unsafe {
-            let mut iv = iv.clone();
-            // self.0.encrypt_init(None, None, Some(iv)).unwrap();
-            // let count = self.0.cipher_update(input, Some(output)).unwrap();
-            // self.0.cipher_final(&mut output[count..]).unwrap();
-            let mut count = 0;
-            from_ntstatus_result(BCryptEncrypt(
-                self.key_handle,
-                Some(input),
-                None,
-                Some(&mut iv),
-                Some(output),
-                &mut count,
-                BCRYPT_BLOCK_PADDING,
-            ))?;
-
-            Ok(())
-        }
+        self.transform(iv, input, output)
     }
 
     fn decrypt(
@@ -143,24 +135,7 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<(), CryptoError> {
-        unsafe {
-            let mut iv = iv.clone();
-            // self.0.decrypt_init(None, None, Some(iv)).unwrap();
-            // let count = self.0.cipher_update(input, Some(output)).unwrap();
-            // self.0.cipher_final(&mut output[count..]).unwrap();
-            let mut count = 0;
-            from_ntstatus_result(BCryptDecrypt(
-                self.key_handle,
-                Some(input),
-                None,
-                Some(&mut iv),
-                Some(output),
-                &mut count,
-                BCRYPT_BLOCK_PADDING,
-            ))?;
-
-            Ok(())
-        }
+        self.transform(iv, input, output)
     }
 }
 
