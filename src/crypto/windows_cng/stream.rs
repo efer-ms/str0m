@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 use std::panic::UnwindSafe;
 use std::{io, mem};
+use windows::Win32::Security::{Authentication::Identity::*, Credentials::*, Cryptography::*};
 
 // use openssl::hash::MessageDigest;
 // use openssl::srtp::SrtpProfileId;
@@ -29,7 +30,7 @@ struct SslStream<T> {
 }
 
 pub enum State<S> {
-    Init(Ssl, S),
+    Init(SecHandle, S),
     Handshaking(MidHandshakeSslStream<S>),
     Established(SslStream<S>),
     Empty,
@@ -46,10 +47,10 @@ impl<S> TlsStream<S>
 where
     S: io::Read + io::Write + UnwindSafe,
 {
-    pub fn new(ssl: Ssl, stream: S) -> Self {
+    pub fn new(cred_handle: SecHandle, stream: S) -> Self {
         TlsStream {
             active: None,
-            state: State::Init(ssl, stream),
+            state: State::Init(cred_handle, stream),
             keying_mat: None,
             exported: false,
         }

@@ -5,8 +5,8 @@ use windows::{core::HSTRING, Win32::Security::Cryptography::*};
 
 #[derive(Debug, Clone)]
 pub struct CngDtlsCert {
-    pub(crate) pkey: NCRYPT_KEY_HANDLE,
-    pub(crate) cert: CERT_CONTEXT,
+    pub(crate) _pkey: NCRYPT_KEY_HANDLE,
+    pub(crate) cert_context: *mut CERT_CONTEXT,
 }
 
 unsafe impl Send for CngDtlsCert {}
@@ -76,8 +76,8 @@ impl CngDtlsCert {
                 Err(CngError("Failed to generate self-signed certificate".to_string()).into())
             } else {
                 Ok(Self {
-                    pkey: key_handle,
-                    cert: *cert_context,
+                    _pkey: key_handle,
+                    cert_context,
                 })
             }
         }
@@ -125,8 +125,8 @@ impl CngDtlsCert {
             if let Err(e) = from_ntstatus_result(BCryptHashData(
                 hash_handle,
                 std::slice::from_raw_parts(
-                    self.cert.pbCertEncoded,
-                    self.cert.cbCertEncoded as usize,
+                    (*self.cert_context).pbCertEncoded,
+                    (*self.cert_context).cbCertEncoded as usize,
                 ),
                 0,
             )) {
@@ -152,11 +152,14 @@ mod tests {
         unsafe {
             let cert = super::CngDtlsCert::new();
             let cert_contents = std::slice::from_raw_parts(
-                cert.cert.pbCertEncoded,
-                cert.cert.cbCertEncoded as usize,
+                (*cert.cert_context).pbCertEncoded,
+                (*cert.cert_context).cbCertEncoded as usize,
             );
             println!("Cert: {:02X?}", cert_contents);
-            println!("Encoding Type: {:#?}", cert.cert.dwCertEncodingType);
+            println!(
+                "Encoding Type: {:#?}",
+                (*cert.cert_context).dwCertEncodingType
+            );
             let fingerprint = cert.fingerprint();
             println!("Fingerprint: {:02X?}", fingerprint);
         }

@@ -2,10 +2,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 
-// use openssl::ec::EcKey;
-// use openssl::nid::Nid;
-// use openssl::ssl::{Ssl, SslContext, SslContextBuilder, SslMethod, SslOptions, SslVerifyMode};
-use windows::{core::HSTRING, Win32::Security::Cryptography::*};
+use windows::Win32::Security::{Authentication::Identity::*, Credentials::*, Cryptography::*};
 
 use crate::crypto::dtls::DtlsInner;
 use crate::crypto::{DtlsEvent, SrtpProfile};
@@ -14,7 +11,7 @@ use crate::io::{DATAGRAM_MTU, DATAGRAM_MTU_WARN};
 use super::cert::CngDtlsCert;
 use super::io_buf::IoBuffer;
 use super::stream::TlsStream;
-use super::CryptoError;
+use super::{CngError, CryptoError};
 
 const DTLS_CIPHERS: &str = "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
 // const DTLS_EC_CURVE: Nid = Nid::X9_62_PRIME256V1;
@@ -35,14 +32,64 @@ pub struct CngDtlsImpl {
 
 impl CngDtlsImpl {
     pub fn new(cert: CngDtlsCert) -> Result<Self, super::CryptoError> {
-        // let context = dtls_create_ctx(&cert)?;
-        // let ssl = dtls_ssl_create(&context)?;
-        // Ok(CngDtlsImpl {
-        //     _cert: cert,
-        //     // _context: context,
-        //     tls: TlsStream::new(ssl, IoBuffer::default()),
-        // })
-        panic!("Not impl!");
+        unsafe {
+            // OpenSSL is configured with "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH"
+            // EECDH - Ephemeral Elliptic Curve Diffie-Hellman -> CALG_ECDH_EPHEM
+            // EDH - Ephemeral Diffie-Hellman -> CALG_DH_EPHEM
+            // AESGCM - AES in Galois/Counter Mode -> CALG_AES (TODO(efer): Not sure about GCM)
+            // AES256 - AES with 256-bit key -> CALG_AES_256
+            let mut algs = [CALG_ECDH_EPHEM, CALG_DH_EPHEM, CALG_AES, CALG_AES_256];
+            let mut cert_contexts = [cert.cert_context];
+
+            let schannel_cred = SCHANNEL_CRED {
+                dwVersion: SCHANNEL_CRED_VERSION,
+                hRootStore: windows::Win32::Security::Cryptography::HCERTSTORE(std::ptr::null_mut()),
+
+                grbitEnabledProtocols: SP_PROT_DTLS1_2_SERVER,
+
+                cCreds: cert_contexts.len() as u32,
+                paCred: cert_contexts.as_mut_ptr() as *mut *mut CERT_CONTEXT,
+
+                cMappers: 0,
+                aphMappers: std::ptr::null_mut(),
+
+                cSupportedAlgs: algs.len() as u32,
+                palgSupportedAlgs: &mut algs[0],
+
+                dwMinimumCipherStrength: 0,
+                dwMaximumCipherStrength: 0,
+                dwSessionLifespan: 0,
+                dwFlags: SCH_CRED_MANUAL_CRED_VALIDATION,
+                dwCredFormat: 0,
+            };
+            println!("schannel_cred: {:?}", schannel_cred);
+
+            // These are the outputs of AcquireCredentialsHandleA
+            let mut cred_handle = SecHandle::default();
+            let mut creds_expiry: i64 = 0;
+
+            AcquireCredentialsHandleA(
+                None,
+                UNISP_NAME_A,
+                SECPKG_CRED_OUTBOUND,
+                None,
+                Some(&schannel_cred as *const _ as *const std::ffi::c_void),
+                None,
+                None,
+                &mut cred_handle,
+                Some(&mut creds_expiry),
+            )
+            .map_err(|e| CryptoError::WindowsCng(CngError(format!("failed to make cred: {e}"))))?;
+            println!("AcquireCredentialsHandleA");
+
+            // let context = dtls_create_ctx(&cert)?;
+            // let ssl = dtls_ssl_create(&context)?;
+            Ok(CngDtlsImpl {
+                _cert: cert,
+                // _context: context,
+                tls: TlsStream::new(cred_handle, IoBuffer::default()),
+            })
+        }
     }
 }
 
