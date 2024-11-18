@@ -5,28 +5,19 @@ use std::time::{Duration, Instant};
 use windows::Win32::Security::{Authentication::Identity::*, Credentials::*, Cryptography::*};
 
 use crate::crypto::dtls::DtlsInner;
-use crate::crypto::{DtlsEvent, SrtpProfile};
-use crate::io::{DATAGRAM_MTU, DATAGRAM_MTU_WARN};
+use crate::crypto::DtlsEvent;
+use crate::io::DATAGRAM_MTU_WARN;
 
 use super::cert::CngDtlsCert;
 use super::io_buf::IoBuffer;
 use super::stream::TlsStream;
 use super::{CngError, CryptoError};
 
-const DTLS_CIPHERS: &str = "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
+// const DTLS_CIPHERS: &str = "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
 // const DTLS_EC_CURVE: Nid = Nid::X9_62_PRIME256V1;
 
 pub struct CngDtlsImpl {
-    /// Certificate for the DTLS session.
-    _cert: CngDtlsCert,
-
-    /// Context belongs together with Fingerprint.
-    ///
-    /// This just needs to be kept alive since it pins the entire openssl context
-    /// from which `Ssl` is created.
-    // _context: SslContext,
-
-    /// The actual openssl TLS stream.
+    /// The TLS stream.
     tls: TlsStream<IoBuffer>,
 }
 
@@ -45,7 +36,7 @@ impl CngDtlsImpl {
                 dwVersion: SCHANNEL_CRED_VERSION,
                 hRootStore: windows::Win32::Security::Cryptography::HCERTSTORE(std::ptr::null_mut()),
 
-                grbitEnabledProtocols: SP_PROT_DTLS1_2_SERVER,
+                grbitEnabledProtocols: 0, //SP_PROT_DTLS1_2_SERVER,
 
                 cCreds: cert_contexts.len() as u32,
                 paCred: cert_contexts.as_mut_ptr() as *mut *mut CERT_CONTEXT,
@@ -53,7 +44,7 @@ impl CngDtlsImpl {
                 cMappers: 0,
                 aphMappers: std::ptr::null_mut(),
 
-                cSupportedAlgs: algs.len() as u32,
+                cSupportedAlgs: 0, //algs.len() as u32,
                 palgSupportedAlgs: &mut algs[0],
 
                 dwMinimumCipherStrength: 0,
@@ -68,9 +59,9 @@ impl CngDtlsImpl {
             let mut cred_handle = SecHandle::default();
             let mut creds_expiry: i64 = 0;
 
-            AcquireCredentialsHandleA(
+            AcquireCredentialsHandleW(
                 None,
-                UNISP_NAME_A,
+                UNISP_NAME_W,
                 SECPKG_CRED_OUTBOUND,
                 None,
                 Some(&schannel_cred as *const _ as *const std::ffi::c_void),
@@ -80,13 +71,12 @@ impl CngDtlsImpl {
                 Some(&mut creds_expiry),
             )
             .map_err(|e| CryptoError::WindowsCng(CngError(format!("failed to make cred: {e}"))))?;
-            println!("AcquireCredentialsHandleA");
+            println!(
+                "AcquireCredentialsHandleA {} {} {creds_expiry}",
+                cred_handle.dwLower, cred_handle.dwUpper
+            );
 
-            // let context = dtls_create_ctx(&cert)?;
-            // let ssl = dtls_ssl_create(&context)?;
             Ok(CngDtlsImpl {
-                _cert: cert,
-                // _context: context,
                 tls: TlsStream::new(cred_handle, IoBuffer::default()),
             })
         }
@@ -178,56 +168,51 @@ impl DtlsInner for CngDtlsImpl {
     }
 }
 
-struct SslContext {}
+// pub fn dtls_create_ctx(cert: &CngDtlsCert) -> Result<SslContext, CryptoError> {
+// // TODO: Technically we want to disallow DTLS < 1.2, but that requires
+// // us to use this commented out unsafe. We depend on browsers disallowing
+// // it instead.
+// // let method = unsafe { SslMethod::from_ptr(DTLSv1_2_method()) };
+// let mut ctx = SslContextBuilder::new(SslMethod::dtls())?;
 
-pub fn dtls_create_ctx(cert: &CngDtlsCert) -> Result<SslContext, CryptoError> {
-    // // TODO: Technically we want to disallow DTLS < 1.2, but that requires
-    // // us to use this commented out unsafe. We depend on browsers disallowing
-    // // it instead.
-    // // let method = unsafe { SslMethod::from_ptr(DTLSv1_2_method()) };
-    // let mut ctx = SslContextBuilder::new(SslMethod::dtls())?;
+// ctx.set_cipher_list(DTLS_CIPHERS)?;
+// let srtp_profiles = {
+//     // Rust can't join directly to a string, need to allocate a vec first :(
+//     // This happens very rarely so the extra allocations don't matter
+//     let all: Vec<_> = SrtpProfile::ALL
+//         .iter()
+//         .map(SrtpProfile::windows_cng_name)
+//         .collect();
 
-    // ctx.set_cipher_list(DTLS_CIPHERS)?;
-    // let srtp_profiles = {
-    //     // Rust can't join directly to a string, need to allocate a vec first :(
-    //     // This happens very rarely so the extra allocations don't matter
-    //     let all: Vec<_> = SrtpProfile::ALL
-    //         .iter()
-    //         .map(SrtpProfile::windows_cng_name)
-    //         .collect();
+//     all.join(":")
+// };
+// ctx.set_tlsext_use_srtp(&srtp_profiles)?;
 
-    //     all.join(":")
-    // };
-    // ctx.set_tlsext_use_srtp(&srtp_profiles)?;
+// let mut mode = SslVerifyMode::empty();
+// mode.insert(SslVerifyMode::PEER);
+// mode.insert(SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+// ctx.set_verify_callback(mode, |_ok, _ctx| true);
 
-    // let mut mode = SslVerifyMode::empty();
-    // mode.insert(SslVerifyMode::PEER);
-    // mode.insert(SslVerifyMode::FAIL_IF_NO_PEER_CERT);
-    // ctx.set_verify_callback(mode, |_ok, _ctx| true);
+// ctx.set_private_key(&cert.pkey)?;
+// ctx.set_certificate(&cert.x509)?;
 
-    // ctx.set_private_key(&cert.pkey)?;
-    // ctx.set_certificate(&cert.x509)?;
+// let mut options = SslOptions::empty();
+// options.insert(SslOptions::SINGLE_ECDH_USE);
+// options.insert(SslOptions::NO_DTLSV1);
+// ctx.set_options(options);
 
-    // let mut options = SslOptions::empty();
-    // options.insert(SslOptions::SINGLE_ECDH_USE);
-    // options.insert(SslOptions::NO_DTLSV1);
-    // ctx.set_options(options);
+// let ctx = ctx.build();
 
-    // let ctx = ctx.build();
+// Ok(ctx)
+// }
 
-    // Ok(ctx)
-    panic!("Not impl!");
-}
+// pub fn dtls_ssl_create(ctx: &SslContext) -> Result<Ssl, CryptoError> {
+// panic!("Not impl!");
+// let mut ssl = Ssl::new(ctx)?;
+// ssl.set_mtu(DATAGRAM_MTU as u32)?;
 
-struct Ssl {}
+// let eckey = EcKey::from_curve_name(DTLS_EC_CURVE)?;
+// ssl.set_tmp_ecdh(&eckey)?;
 
-pub fn dtls_ssl_create(ctx: &SslContext) -> Result<Ssl, CryptoError> {
-    panic!("Not impl!");
-    // let mut ssl = Ssl::new(ctx)?;
-    // ssl.set_mtu(DATAGRAM_MTU as u32)?;
-
-    // let eckey = EcKey::from_curve_name(DTLS_EC_CURVE)?;
-    // ssl.set_tmp_ecdh(&eckey)?;
-
-    // Ok(ssl)
-}
+// Ok(ssl)
+// }

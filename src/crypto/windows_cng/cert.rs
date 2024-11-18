@@ -5,7 +5,6 @@ use windows::{core::HSTRING, Win32::Security::Cryptography::*};
 
 #[derive(Debug, Clone)]
 pub struct CngDtlsCert {
-    pub(crate) _pkey: NCRYPT_KEY_HANDLE,
     pub(crate) cert_context: *mut CERT_CONTEXT,
 }
 
@@ -44,7 +43,7 @@ impl CngDtlsCert {
             )
             .map_err(from_win_err)?;
 
-            let mut key_provider_info = CRYPT_KEY_PROV_INFO::default();
+            /*let mut key_provider_info = CRYPT_KEY_PROV_INFO::default();
             key_provider_info.dwFlags = CRYPT_KEY_FLAGS(NCRYPT_SILENT_FLAG.0);
             key_provider_info.dwKeySpec = AT_KEYEXCHANGE.0;
 
@@ -60,12 +59,12 @@ impl CngDtlsCert {
                 NCRYPT_FLAGS(0),
             )
             .map_err(from_win_err)?;
-            NCryptFinalizeKey(key_handle, NCRYPT_SILENT_FLAG).map_err(from_win_err)?;
+            NCryptFinalizeKey(key_handle, NCRYPT_SILENT_FLAG).map_err(from_win_err)?;*/
             let cert_context = CertCreateSelfSignCertificate(
-                HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(key_handle.0),
+                HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(0), //key_handle.0),
                 &name_blob,
                 CERT_CREATE_SELFSIGN_FLAGS(0),
-                Some(&key_provider_info),
+                None, //Some(&key_provider_info),
                 None,
                 None,
                 None,
@@ -75,10 +74,7 @@ impl CngDtlsCert {
             if cert_context.is_null() {
                 Err(CngError("Failed to generate self-signed certificate".to_string()).into())
             } else {
-                Ok(Self {
-                    _pkey: key_handle,
-                    cert_context,
-                })
+                Ok(Self { cert_context })
             }
         }
     }
