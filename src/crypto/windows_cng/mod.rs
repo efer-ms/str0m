@@ -5,9 +5,6 @@ use super::{CryptoError, SrtpProfile};
 mod cert;
 pub use cert::CngDtlsCert;
 
-mod io_buf;
-mod stream;
-
 mod dtls;
 pub use dtls::CngDtlsImpl;
 
