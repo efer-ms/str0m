@@ -117,7 +117,11 @@ impl CngDtlsImpl {
                 self.cred_handle.as_ref().map(|r| r as *const _),
                 self.ctx_handle.as_ref().map(|r| r as *const _),
                 None,
-                ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR | ISC_REQ_DATAGRAM,
+                ISC_REQ_CONFIDENTIALITY
+                    | ISC_REQ_EXTENDED_ERROR
+                    | ISC_REQ_DATAGRAM
+                    | ISC_REQ_MANUAL_CRED_VALIDATION
+                    | ISC_REQ_USE_SUPPLIED_CREDS,
                 0,
                 SECURITY_NATIVE_DREP,
                 Some(&in_buffer_desc),
@@ -138,12 +142,7 @@ impl CngDtlsImpl {
                 SEC_E_OK => {
                     // Move to Done
                     self.state = HandshakeState::Completed;
-                    // first time we complete the handshake, we extract the keying material for SRTP.
-                    // if !self.exported {
-                    //     let keying_mat = self.export_srtp_keying_material()?;
-                    //     self.exported = true;
-                    //     self.keying_mat = Some(keying_mat);
-                    // }
+                    self.keying_mat = self.export_srtp_keying_material()?;
                     println!("Client DONE!");
                     Ok(())
                 }
@@ -253,7 +252,10 @@ impl CngDtlsImpl {
                 self.cred_handle.as_ref().map(|r| r as *const _),
                 self.ctx_handle.as_ref().map(|r| r as *const _),
                 in_buffer_desc,
-                ASC_REQ_CONFIDENTIALITY | ASC_REQ_EXTENDED_ERROR | ASC_REQ_DATAGRAM,
+                ASC_REQ_CONFIDENTIALITY
+                    | ASC_REQ_EXTENDED_ERROR
+                    | ASC_REQ_DATAGRAM // Datagram mode
+                    | ASC_REQ_MUTUAL_AUTH, // Make sure we ask for the client cert
                 SECURITY_NATIVE_DREP,
                 Some(&mut new_ctx_handle),
                 Some(&mut out_buffer_desc),
@@ -272,12 +274,7 @@ impl CngDtlsImpl {
                 SEC_E_OK => {
                     // Move to Done
                     self.state = HandshakeState::Completed;
-                    // first time we complete the handshake, we extract the keying material for SRTP.
-                    // if !self.exported {
-                    //     let keying_mat = self.export_srtp_keying_material()?;
-                    //     self.exported = true;
-                    //     self.keying_mat = Some(keying_mat);
-                    // }
+                    self.keying_mat = self.export_srtp_keying_material()?;
                     println!("Server DONE!");
                     Ok(())
                 }
@@ -293,6 +290,47 @@ impl CngDtlsImpl {
                     Err(CngError(format!("DTLS failure: {:?}", e)).into())
                 }
             };
+        }
+    }
+
+    fn export_srtp_keying_material(
+        &mut self,
+    ) -> Result<Option<(KeyingMaterial, SrtpProfile, Fingerprint)>, CryptoError> {
+        println!(
+            "Exporting SRTP keying material {:?} {} {}",
+            self.ctx_handle, self.expiry, self.attrs
+        );
+        let srtp_profile = SrtpProfile::AeadAes128Gcm;
+
+        unsafe {
+            let mut buf = vec![0_u8; srtp_profile.keying_material_len()];
+            // let mut keying_material_ptr = std::ptr::null_mut();
+            // QueryContextAttributesA(
+            //     self.ctx_handle.as_ref().unwrap() as *const _,
+            //     SECPKG_ATTR_KEYING_MATERIAL_INFO,
+            //     &mut keying_material_ptr as *mut _ as *mut std::ffi::c_void,
+            // )
+            // .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
+
+            // let keying_material = *(keying_material_ptr as *const SecPkgContext_KeyingMaterialInfo);
+            // println!("got keying material: {:?}", keying_material);
+            let keying_material = KeyingMaterial::new(buf);
+
+            let mut remote_cert_context_ptr = std::ptr::null_mut();
+            QueryContextAttributesA(
+                self.ctx_handle.as_ref().unwrap() as *const _,
+                SECPKG_ATTR_REMOTE_CERT_CONTEXT,
+                &mut remote_cert_context_ptr as *mut _ as *mut std::ffi::c_void,
+            )
+            .map_err(|e| CngError(format!("QueryContextAttributesA: {:?}", e)))?;
+            let remote_cert_context = *(remote_cert_context_ptr as *const CERT_CONTEXT);
+            println!("got cert: {:?}", remote_cert_context);
+
+            let fingerprint = super::cert::cert_fingerprint(&remote_cert_context);
+            println!("fingerprint: {}", fingerprint);
+            _ = CertFreeCertificateContext(Some(remote_cert_context_ptr));
+
+            Ok(Some((keying_material, srtp_profile, fingerprint)))
         }
     }
 }
