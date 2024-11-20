@@ -330,11 +330,7 @@ impl CngDtlsImpl {
         output_events.push_back(DtlsEvent::Connected);
         println!("Exporting SRTP keying material {}", self.attrs);
         unsafe {
-            let mut srtp_parameters = SecPkgContext_SrtpParameters {
-                ProtectionProfile: 5,
-                MasterKeyIdentifierSize: 10,
-                ..Default::default()
-            };
+            let mut srtp_parameters = SecPkgContext_SrtpParameters::default();
             QueryContextAttributesA(
                 self.ctx_handle.as_ref().unwrap() as *const _,
                 SECPKG_ATTR(SECPKG_ATTR_SRTP_PARAMETERS),
@@ -342,9 +338,42 @@ impl CngDtlsImpl {
             )
             .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
             println!("got srtp params: {:?}", srtp_parameters);
+
+            let label = b"EXTRACTOR-dtls_srtp\0";
+            let keying_material_info = SecPkgContext_KeyingMaterialInfo {
+                cbLabel: label.len() as u16,
+                pszLabel: windows_strings::PSTR(label.as_ptr() as *mut u8),
+                cbKeyingMaterial: 56,
+                cbContextValue: 0,
+                pbContextValue: std::ptr::null_mut(),
+            };
+            SetContextAttributesW(
+                self.ctx_handle.as_ref().unwrap() as *const _,
+                SECPKG_ATTR_KEYING_MATERIAL_INFO,
+                &keying_material_info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<SecPkgContext_KeyingMaterialInfo>() as u32,
+            )
+            .map_err(|e| CngError(format!("SetContextAttributesA Keying Material: {:?}", e)))?;
+
+            let mut keying_material = SecPkgContext_KeyingMaterial::default();
+            QueryContextAttributesExW(
+                self.ctx_handle.as_ref().unwrap() as *const _,
+                SECPKG_ATTR(SECPKG_ATTR_KEYING_MATERIAL),
+                &mut keying_material as *mut _ as *mut std::ffi::c_void,
+                std::mem::size_of::<SecPkgContext_KeyingMaterial>() as u32,
+            )
+            .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
+            println!("got keying_material params: {:?}", keying_material);
+
             output_events.push_back(DtlsEvent::SrtpKeyingMaterial(
-                KeyingMaterial::new(vec![0u8; 56]),
-                SrtpProfile::AeadAes128Gcm,
+                KeyingMaterial::new(
+                    std::slice::from_raw_parts(
+                        keying_material.pbKeyingMaterial,
+                        keying_material.cbKeyingMaterial as usize,
+                    )
+                    .to_vec(),
+                ),
+                srtp_profile_from_id(srtp_parameters.ProtectionProfile),
             ));
 
             let mut remote_cert_context_ptr = std::ptr::null_mut();
@@ -531,6 +560,15 @@ impl DtlsInner for CngDtlsImpl {
     }
 }
 
+fn srtp_profile_from_id(id: u16) -> SrtpProfile {
+    match id {
+        0x0007 => SrtpProfile::AeadAes128Gcm,
+        0x0700 => SrtpProfile::AeadAes128Gcm,
+        0x0001 => SrtpProfile::Aes128CmSha1_80,
+        0x0100 => SrtpProfile::Aes128CmSha1_80,
+        _ => panic!("Unknown SRTP profile ID: {:04x}", id),
+    }
+}
 // pub fn dtls_create_ctx(cert: &CngDtlsCert) -> Result<SslContext, CryptoError> {
 // // TODO: Technically we want to disallow DTLS < 1.2, but that requires
 // // us to use this commented out unsafe. We depend on browsers disallowing
