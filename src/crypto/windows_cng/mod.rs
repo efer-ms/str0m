@@ -19,7 +19,7 @@ use windows::Win32::Foundation::NTSTATUS;
 
 impl SrtpProfile {
     /// What this profile is called in OpenSSL parlance.
-    pub(crate) fn cng_name(&self) -> &'static str {
+    pub(crate) fn _cng_name(&self) -> &'static str {
         match self {
             #[cfg(feature = "_internal_test_exports")]
             SrtpProfile::PassThrough => "NULL",
