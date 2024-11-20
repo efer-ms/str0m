@@ -61,8 +61,8 @@ pub struct CngDtlsImpl {
     state: HandshakeState,
     expiry: i64,
     attrs: u32,
+    encrypt_message_input_sizes: SecPkgContext_StreamSizes,
 
-    input: VecDeque<Vec<u8>>,
     output: VecDeque<Vec<u8>>,
 }
 
@@ -76,7 +76,7 @@ impl CngDtlsImpl {
             state: HandshakeState::Idle,
             expiry: 0,
             attrs: 0,
-            input: VecDeque::default(),
+            encrypt_message_input_sizes: SecPkgContext_StreamSizes::default(),
             output: VecDeque::default(),
         })
     }
@@ -105,16 +105,16 @@ impl CngDtlsImpl {
                     },
                 ];
                 SecBufferDesc {
+                    ulVersion: SECBUFFER_VERSION,
                     cBuffers: 4,
                     pBuffers: &buffers[0] as *const _ as *mut _,
-                    ulVersion: SECBUFFER_VERSION,
                 }
             }
             None => SecBufferDesc {
+                ulVersion: SECBUFFER_VERSION,
                 cBuffers: 2,
                 pBuffers: &[DTLS_MTU_SECBUFFER, SRTP_PROTECTION_PROFILES_SECBUFFER] as *const _
                     as *mut _,
-                ulVersion: SECBUFFER_VERSION,
             },
         };
 
@@ -328,8 +328,16 @@ impl CngDtlsImpl {
         output_events: &mut VecDeque<DtlsEvent>,
     ) -> Result<(), CryptoError> {
         output_events.push_back(DtlsEvent::Connected);
-        println!("Exporting SRTP keying material {}", self.attrs);
+
         unsafe {
+            QueryContextAttributesW(
+                self.ctx_handle.as_ref().unwrap() as *const _,
+                SECPKG_ATTR_STREAM_SIZES,
+                &mut self.encrypt_message_input_sizes as *mut _ as *mut std::ffi::c_void,
+            )
+            .map_err(|e| CngError(format!("SECPKG_ATTR_STREAM_SIZES: {:?}", e)))?;
+            println!("got sizes params: {:?}", self.encrypt_message_input_sizes);
+
             let mut srtp_parameters = SecPkgContext_SrtpParameters::default();
             QueryContextAttributesA(
                 self.ctx_handle.as_ref().unwrap() as *const _,
@@ -393,6 +401,66 @@ impl CngDtlsImpl {
 
             Ok(())
         }
+    }
+
+    fn process_packet(
+        &mut self,
+        datagram: &[u8],
+        output_events: &mut VecDeque<DtlsEvent>,
+    ) -> Result<(), CryptoError> {
+        if self.state != HandshakeState::Completed {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "Not ready".to_string(),
+            )
+            .into());
+        }
+        let ctx_handle = self.ctx_handle.as_ref().expect("No ctx!?");
+
+        unsafe {
+            let header_size = self.encrypt_message_input_sizes.cbHeader as usize;
+            let trailer_size = self.encrypt_message_input_sizes.cbTrailer as usize;
+
+            let output = datagram.to_vec();
+
+            let sec_buffers = [
+                SecBuffer {
+                    BufferType: SECBUFFER_DATA,
+                    cbBuffer: output.len() as u32,
+                    pvBuffer: &output[0] as *const _ as *mut _,
+                },
+                SecBuffer {
+                    cbBuffer: 0,
+                    BufferType: SECBUFFER_EMPTY,
+                    pvBuffer: std::ptr::null_mut(),
+                },
+                SecBuffer {
+                    cbBuffer: 0,
+                    BufferType: SECBUFFER_EMPTY,
+                    pvBuffer: std::ptr::null_mut(),
+                },
+                SecBuffer {
+                    cbBuffer: 0,
+                    BufferType: SECBUFFER_EMPTY,
+                    pvBuffer: std::ptr::null_mut(),
+                },
+            ];
+            let sec_buffer_desc = SecBufferDesc {
+                ulVersion: SECBUFFER_VERSION,
+                cBuffers: 4,
+                pBuffers: &sec_buffers[0] as *const _ as *mut _,
+            };
+
+            println!("Before Decrypt {:02x?}", output);
+            let status = DecryptMessage(ctx_handle, &sec_buffer_desc, 0, None);
+            let data = output[header_size..output.len() - trailer_size].to_vec();
+            println!(
+                "Decrypt Message {:?} {} {:02x?}",
+                sec_buffers[1], status, data
+            );
+            output_events.push_back(DtlsEvent::Data(data));
+        }
+        Ok(())
     }
 }
 
@@ -476,26 +544,13 @@ impl DtlsInner for CngDtlsImpl {
     fn handle_receive(
         &mut self,
         datagram: &[u8],
-        o: &mut VecDeque<DtlsEvent>,
+        output_events: &mut VecDeque<DtlsEvent>,
     ) -> Result<(), CryptoError> {
         let state = self.state;
         match state {
-            HandshakeState::Completed => {
-                todo!("Needs to decrypt packet and add Data event");
-                // let mut buf = vec![0; 2000];
-                // let n = match self.tls.read(&mut buf) {
-                //     Ok(v) => v,
-                //     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                //         return Ok(());
-                //     }
-                //     Err(e) => return Err(e.into()),
-                // };
-                // buf.truncate(n);
-
-                // o.push_back(DtlsEvent::Data(buf));
-            }
-            HandshakeState::ClientHandshake => self.client_handshake(Some(datagram), o),
-            HandshakeState::ServerHandshake => self.server_handshake(Some(datagram), o),
+            HandshakeState::Completed => self.process_packet(datagram, output_events),
+            HandshakeState::ClientHandshake => self.client_handshake(Some(datagram), output_events),
+            HandshakeState::ServerHandshake => self.server_handshake(Some(datagram), output_events),
             HandshakeState::Failed => Err(CngError("Handshake failed".to_string()).into()),
             HandshakeState::Idle => Err(CngError("Handshake not initialized".to_string()).into()),
         }
@@ -529,22 +584,63 @@ impl DtlsInner for CngDtlsImpl {
 
     // This is DATA sent from client over SCTP/DTLS
     fn handle_input(&mut self, data: &[u8]) -> Result<(), CryptoError> {
-        self.input.push_back(data.to_vec());
-        // } else if self.tls.complete_handshake_until_block()? {
-        //     output.push_back(DtlsEvent::Connected);
+        if self.state != HandshakeState::Completed {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "Not ready".to_string(),
+            )
+            .into());
+        }
+        let ctx_handle = self.ctx_handle.as_ref().expect("No ctx!?");
 
-        //     let (keying_material, srtp_profile, fingerprint) = self
-        //         .tls
-        //         .take_srtp_keying_material()
-        //         .expect("Exported keying material");
+        unsafe {
+            let header_size = self.encrypt_message_input_sizes.cbHeader as usize;
+            let trailer_size = self.encrypt_message_input_sizes.cbTrailer as usize;
+            let message_size = data.len();
 
-        //     output.push_back(DtlsEvent::RemoteFingerprint(fingerprint));
+            let mut output = vec![0u8; header_size + trailer_size + message_size];
+            println!(
+                "Handle Input {} {} {} {}",
+                header_size,
+                trailer_size,
+                message_size,
+                output.len()
+            );
+            output[header_size..header_size + message_size].copy_from_slice(data);
 
-        //     output.push_back(DtlsEvent::SrtpKeyingMaterial(keying_material, srtp_profile));
-        //     Ok(false)
-        // } else {
-        //     Ok(true)
-        // }
+            let sec_buffers = [
+                SecBuffer {
+                    BufferType: SECBUFFER_STREAM_HEADER,
+                    cbBuffer: header_size as u32,
+                    pvBuffer: &output[0] as *const _ as *mut _,
+                },
+                SecBuffer {
+                    BufferType: SECBUFFER_DATA,
+                    cbBuffer: message_size as u32,
+                    pvBuffer: &output[header_size] as *const _ as *mut _,
+                },
+                SecBuffer {
+                    BufferType: SECBUFFER_STREAM_TRAILER,
+                    cbBuffer: trailer_size as u32,
+                    pvBuffer: &output[header_size + message_size] as *const _ as *mut _,
+                },
+                SecBuffer {
+                    cbBuffer: 0,
+                    BufferType: SECBUFFER_EMPTY,
+                    pvBuffer: std::ptr::null_mut(),
+                },
+            ];
+            let sec_buffer_desc = SecBufferDesc {
+                ulVersion: SECBUFFER_VERSION,
+                cBuffers: 4,
+                pBuffers: &sec_buffers[0] as *const _ as *mut _,
+            };
+
+            println!("Before Encrypt {:02x?}", data);
+            let status = EncryptMessage(ctx_handle, 0, &sec_buffer_desc, 0);
+            println!("Encrypt Message {} {:02x?}", status, output);
+            self.output.push_back(output);
+        }
         Ok(())
     }
 
@@ -569,51 +665,3 @@ fn srtp_profile_from_id(id: u16) -> SrtpProfile {
         _ => panic!("Unknown SRTP profile ID: {:04x}", id),
     }
 }
-// pub fn dtls_create_ctx(cert: &CngDtlsCert) -> Result<SslContext, CryptoError> {
-// // TODO: Technically we want to disallow DTLS < 1.2, but that requires
-// // us to use this commented out unsafe. We depend on browsers disallowing
-// // it instead.
-// // let method = unsafe { SslMethod::from_ptr(DTLSv1_2_method()) };
-// let mut ctx = SslContextBuilder::new(SslMethod::dtls())?;
-
-// ctx.set_cipher_list(DTLS_CIPHERS)?;
-// let srtp_profiles = {
-//     // Rust can't join directly to a string, need to allocate a vec first :(
-//     // This happens very rarely so the extra allocations don't matter
-//     let all: Vec<_> = SrtpProfile::ALL
-//         .iter()
-//         .map(SrtpProfile::windows_cng_name)
-//         .collect();
-
-//     all.join(":")
-// };
-// ctx.set_tlsext_use_srtp(&srtp_profiles)?;
-
-// let mut mode = SslVerifyMode::empty();
-// mode.insert(SslVerifyMode::PEER);
-// mode.insert(SslVerifyMode::FAIL_IF_NO_PEER_CERT);
-// ctx.set_verify_callback(mode, |_ok, _ctx| true);
-
-// ctx.set_private_key(&cert.pkey)?;
-// ctx.set_certificate(&cert.x509)?;
-
-// let mut options = SslOptions::empty();
-// options.insert(SslOptions::SINGLE_ECDH_USE);
-// options.insert(SslOptions::NO_DTLSV1);
-// ctx.set_options(options);
-
-// let ctx = ctx.build();
-
-// Ok(ctx)
-// }
-
-// pub fn dtls_ssl_create(ctx: &SslContext) -> Result<Ssl, CryptoError> {
-// panic!("Not impl!");
-// let mut ssl = Ssl::new(ctx)?;
-// ssl.set_mtu(DATAGRAM_MTU as u32)?;
-
-// let eckey = EcKey::from_curve_name(DTLS_EC_CURVE)?;
-// ssl.set_tmp_ecdh(&eckey)?;
-
-// Ok(ssl)
-// }
