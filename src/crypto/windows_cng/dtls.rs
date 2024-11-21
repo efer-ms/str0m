@@ -16,13 +16,13 @@ use super::CryptoError;
 #[repr(C)]
 struct SrtpProtectionProfilesBuffer {
     count: u16,
-    profiles: [u8; 2], // Big-Endian Encoded values.
+    profiles: [u8; 4], // Big-Endian Encoded values.
 }
 const SRTP_PROTECTION_PROFILES_BUFFER_INSTANCE: SrtpProtectionProfilesBuffer =
     SrtpProtectionProfilesBuffer {
-        count: 2, //4,
+        count: 4,
         profiles: [
-            //0x00, 0x07, /* SRTP_AES128_GCM (RFC7714 Sec 14.2) */
+            0x00, 0x07, /* SRTP_AES128_GCM (RFC7714 Sec 14.2) */
             0x00, 0x01, /* SRTP_AES128_CM_SHA1_80 (RFC5764 Section 4.1.2) */
         ],
     };
