@@ -13,19 +13,16 @@ use crate::io::{DATAGRAM_MTU, DATAGRAM_MTU_WARN};
 use super::cert::CngDtlsCert;
 use super::CryptoError;
 
-// const DTLS_CIPHERS: &str = "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
-// const DTLS_EC_CURVE: Nid = Nid::X9_62_PRIME256V1;
-
 #[repr(C)]
 struct SrtpProtectionProfilesBuffer {
     count: u16,
-    profiles: [u8; 4], // Big-Endian Encoded values.
+    profiles: [u8; 2], // Big-Endian Encoded values.
 }
 const SRTP_PROTECTION_PROFILES_BUFFER_INSTANCE: SrtpProtectionProfilesBuffer =
     SrtpProtectionProfilesBuffer {
-        count: 4,
+        count: 2, //4,
         profiles: [
-            0x00, 0x07, /* SRTP_AES128_GCM (RFC7714 Sec 14.2) */
+            //0x00, 0x07, /* SRTP_AES128_GCM (RFC7714 Sec 14.2) */
             0x00, 0x01, /* SRTP_AES128_CM_SHA1_80 (RFC5764 Section 4.1.2) */
         ],
     };
@@ -147,8 +144,6 @@ impl CngDtlsImpl {
                 ISC_REQ_CONFIDENTIALITY
                     | ISC_REQ_EXTENDED_ERROR
                     | ISC_REQ_INTEGRITY
-                    | ISC_REQ_REPLAY_DETECT
-                    | ISC_REQ_SEQUENCE_DETECT
                     | ISC_REQ_DATAGRAM
                     | ISC_REQ_MANUAL_CRED_VALIDATION
                     | ISC_REQ_USE_SUPPLIED_CREDS,
@@ -166,17 +161,12 @@ impl CngDtlsImpl {
             if out_buffers[0].cbBuffer > 0 {
                 let len = out_buffers[0].cbBuffer;
                 self.output.push_back(token_buffer[..len as usize].to_vec());
-                println!(
-                    "Client Outbound Datagram {:02x?}",
-                    &token_buffer[..len as usize]
-                );
             }
             return match status {
                 SEC_E_OK => {
                     // Move to Done
                     self.state = HandshakeState::Completed;
                     self.export_srtp_keying_material(output_events)?;
-                    println!("Client DONE!");
                     Ok(())
                 }
                 SEC_I_MESSAGE_FRAGMENT => self.client_handshake(None, output_events),
@@ -284,8 +274,6 @@ impl CngDtlsImpl {
                 ASC_REQ_CONFIDENTIALITY
                     | ASC_REQ_EXTENDED_ERROR
                     | ASC_REQ_INTEGRITY
-                    | ASC_REQ_REPLAY_DETECT
-                    | ASC_REQ_SEQUENCE_DETECT
                     | ASC_REQ_DATAGRAM // Datagram mode
                     | ASC_REQ_MUTUAL_AUTH, // Make sure we ask for the client cert
                 SECURITY_NATIVE_DREP,
@@ -300,10 +288,6 @@ impl CngDtlsImpl {
             if out_buffers[0].cbBuffer > 0 {
                 let len = out_buffers[0].cbBuffer;
                 self.output.push_back(token_buffer[..len as usize].to_vec());
-                println!(
-                    "Server Outbound Datagram {:02x?}",
-                    &token_buffer[..len as usize]
-                );
             }
 
             return match status {
@@ -311,7 +295,6 @@ impl CngDtlsImpl {
                     // Move to Done
                     self.state = HandshakeState::Completed;
                     self.export_srtp_keying_material(output_events)?;
-                    println!("Server DONE!");
                     Ok(())
                 }
                 SEC_I_MESSAGE_FRAGMENT => self.server_handshake(None, output_events),
@@ -342,7 +325,6 @@ impl CngDtlsImpl {
                 &mut self.encrypt_message_input_sizes as *mut _ as *mut std::ffi::c_void,
             )
             .map_err(|e| CngError(format!("SECPKG_ATTR_STREAM_SIZES: {:?}", e)))?;
-            println!("got sizes params: {:?}", self.encrypt_message_input_sizes);
 
             let mut srtp_parameters = SecPkgContext_SrtpParameters::default();
             QueryContextAttributesA(
@@ -351,13 +333,12 @@ impl CngDtlsImpl {
                 &mut srtp_parameters as *mut _ as *mut std::ffi::c_void,
             )
             .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
-            println!("got srtp params: {:?}", srtp_parameters);
 
             let label = b"EXTRACTOR-dtls_srtp\0";
             let keying_material_info = SecPkgContext_KeyingMaterialInfo {
                 cbLabel: label.len() as u16,
                 pszLabel: windows_strings::PSTR(label.as_ptr() as *mut u8),
-                cbKeyingMaterial: 56,
+                cbKeyingMaterial: 60, //56,
                 cbContextValue: 0,
                 pbContextValue: std::ptr::null_mut(),
             };
@@ -377,13 +358,6 @@ impl CngDtlsImpl {
                 std::mem::size_of::<SecPkgContext_KeyingMaterial>() as u32,
             )
             .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
-            println!(
-                "got keying_material params: {:02x?}",
-                std::slice::from_raw_parts(
-                    keying_material.pbKeyingMaterial,
-                    keying_material.cbKeyingMaterial as usize
-                )
-            );
 
             output_events.push_back(DtlsEvent::SrtpKeyingMaterial(
                 KeyingMaterial::new(
@@ -406,7 +380,6 @@ impl CngDtlsImpl {
             let remote_cert_context = *(remote_cert_context_ptr as *const CERT_CONTEXT);
 
             let fingerprint = super::cert::cert_fingerprint(&remote_cert_context);
-            println!("fingerprint: {}", fingerprint);
             output_events.push_back(DtlsEvent::RemoteFingerprint(fingerprint));
 
             _ = CertFreeCertificateContext(Some(remote_cert_context_ptr));
@@ -469,23 +442,16 @@ impl CngDtlsImpl {
                 pBuffers: &sec_buffers[0] as *const _ as *mut _,
             };
 
-            println!("Before Decrypt {:02x?}", output);
             let status = DecryptMessage(ctx_handle, &sec_buffer_desc, 0, None);
-            let data = output[header_size..output.len() - trailer_size].to_vec();
-            if sec_buffers[3].cbBuffer > 0 {
-                println!(
-                    "ALERT {:02x?}",
-                    std::slice::from_raw_parts(
-                        sec_buffers[3].pvBuffer as *const u8,
-                        sec_buffers[3].cbBuffer as usize
-                    )
-                )
+            match status {
+                SEC_E_OK => {
+                    let data = output[header_size..output.len() - trailer_size].to_vec();
+                    output_events.push_back(DtlsEvent::Data(data));
+                }
+                status => {
+                    println!("Non-OK Response To Decrypt: {}", status);
+                }
             }
-            println!(
-                "Decrypt Message {:?} {} {:02x?}",
-                sec_buffers[1], status, data
-            );
-            output_events.push_back(DtlsEvent::Data(data));
         }
         Ok(())
     }
@@ -528,7 +494,7 @@ impl DtlsInner for CngDtlsImpl {
             dwFlags: SCH_CRED_MANUAL_CRED_VALIDATION,
             dwCredFormat: 0,
         };
-        println!("schannel_cred: {:?}", schannel_cred);
+
         unsafe {
             // These are the outputs of AcquireCredentialsHandleA
             let mut cred_handle = SecHandle::default();
@@ -551,10 +517,6 @@ impl DtlsInner for CngDtlsImpl {
             .expect("Failed to generate creds");
 
             self.cred_handle = Some(cred_handle);
-            println!(
-                "AcquireCredentialsHandleA {} {} {creds_expiry}",
-                cred_handle.dwLower, cred_handle.dwUpper
-            );
         }
 
         if active {
@@ -620,13 +582,6 @@ impl DtlsInner for CngDtlsImpl {
             let message_size = data.len();
 
             let mut output = vec![0u8; header_size + trailer_size + message_size];
-            println!(
-                "Handle Input {} {} {} {}",
-                header_size,
-                trailer_size,
-                message_size,
-                output.len()
-            );
             output[header_size..header_size + message_size].copy_from_slice(data);
 
             let sec_buffers = [
@@ -657,10 +612,15 @@ impl DtlsInner for CngDtlsImpl {
                 pBuffers: &sec_buffers[0] as *const _ as *mut _,
             };
 
-            println!("Before Encrypt {:02x?}", data);
             let status = EncryptMessage(ctx_handle, 0, &sec_buffer_desc, 0);
-            println!("Encrypt Message {} {:02x?}", status, output,);
-            self.output.push_back(output);
+            match status {
+                SEC_E_OK => {
+                    self.output.push_back(output);
+                }
+                status => {
+                    println!("Non-OK Response To Encrypt: {}", status);
+                }
+            }
         }
         Ok(())
     }
@@ -678,6 +638,7 @@ impl DtlsInner for CngDtlsImpl {
 }
 
 fn srtp_profile_from_id(id: u16) -> SrtpProfile {
+    println!("strpProfileFromId: {}", id);
     match id {
         0x0007 => SrtpProfile::AeadAes128Gcm,
         0x0700 => SrtpProfile::AeadAes128Gcm,

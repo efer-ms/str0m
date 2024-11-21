@@ -67,6 +67,7 @@ impl CngAes128CmSha1_80 {
         output: &mut [u8],
     ) -> Result<(), CryptoError> {
         let mut iv = iv.clone();
+        let mut intermediate_output = [0u8; 1200];
         unsafe {
             // TODO(efer): This could be optimized, by filling an intermediate buffer with the IV
             // incrementing by 1 each time, then executing the BCryptEncrypt once with the IV data.
@@ -74,14 +75,16 @@ impl CngAes128CmSha1_80 {
             // the stack. Copy the IV to the stack, then increment the counters in the repetitions.
             // The encrypt the IV buffer, into the output, and finally XOR with the input.
             let mut offset = 0;
-            while offset < input.len() {
+            while offset <= input.len() {
                 let mut _count = 0;
+                let start = offset;
+                let end = offset + 16;
                 from_ntstatus_result(BCryptEncrypt(
                     self.key_handle,
-                    Some(iv.as_slice()),
+                    Some(&iv[..(end - start)]),
                     None,
                     None,
-                    Some(&mut output[offset..offset + 16]),
+                    Some(&mut intermediate_output[start..end]),
                     &mut _count,
                     BCRYPT_FLAGS(0),
                 ))?;
@@ -99,7 +102,7 @@ impl CngAes128CmSha1_80 {
 
             // XOR the output with the input
             for i in 0..input.len() {
-                output[i] = input[i] ^ output[i];
+                output[i] = input[i] ^ intermediate_output[i];
             }
 
             Ok(())
