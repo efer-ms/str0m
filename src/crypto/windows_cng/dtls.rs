@@ -371,7 +371,13 @@ impl CngDtlsImpl {
                 std::mem::size_of::<SecPkgContext_KeyingMaterial>() as u32,
             )
             .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
-            println!("got keying_material params: {:?}", keying_material);
+            println!(
+                "got keying_material params: {:02x?}",
+                std::slice::from_raw_parts(
+                    keying_material.pbKeyingMaterial,
+                    keying_material.cbKeyingMaterial as usize
+                )
+            );
 
             output_events.push_back(DtlsEvent::SrtpKeyingMaterial(
                 KeyingMaterial::new(
