@@ -56,18 +56,18 @@ pub fn main() {
     // The run loop is on a separate thread to the web server.
     thread::spawn(move || run(socket, rx));
 
-    let server = Server::new_ssl(
-        "0.0.0.0:3000",
-        move |request| web_request(request, addr, tx.clone()),
-        certificate,
-        private_key,
-    )
-    .expect("starting the web server");
+    // let server = Server::new_ssl(
+    //     "0.0.0.0:3000",
+    //     move |request| web_request(request, addr, tx.clone()),
+    //     certificate,
+    //     private_key,
+    // )
+    // .expect("starting the web server");
 
-    let port = server.server_addr().port();
-    info!("Connect a browser to https://{:?}:{:?}", addr.ip(), port);
+    // let port = server.server_addr().port();
+    // info!("Connect a browser to https://{:?}:{:?}", addr.ip(), port);
 
-    server.run();
+    // server.run();
 }
 
 // Handle a web request.

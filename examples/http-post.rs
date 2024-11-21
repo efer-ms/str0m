@@ -40,13 +40,13 @@ pub fn main() {
     // Figure out some public IP address, since Firefox will not accept 127.0.0.1 for WebRTC traffic.
     let host_addr = util::select_host_address();
 
-    let server = Server::new_ssl("0.0.0.0:3000", web_request, certificate, private_key)
-        .expect("starting the web server");
+    // let server = Server::new_ssl("0.0.0.0:3000", web_request, certificate, private_key)
+    //     .expect("starting the web server");
 
-    let port = server.server_addr().port();
-    info!("Connect a browser to https://{:?}:{:?}", host_addr, port);
+    // let port = server.server_addr().port();
+    // info!("Connect a browser to https://{:?}:{:?}", host_addr, port);
 
-    server.run();
+    // server.run();
 }
 
 // Handle a web request.

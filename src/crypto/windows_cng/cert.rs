@@ -2,6 +2,7 @@ use super::{from_ntstatus_result, from_win_err, CngError, CryptoError};
 use crate::crypto::dtls::DTLS_CERT_IDENTITY;
 use crate::crypto::Fingerprint;
 use windows::{core::HSTRING, Win32::Security::Cryptography::*};
+use windows_strings::PSTR;
 
 #[derive(Debug, Clone)]
 pub struct CngDtlsCert {
@@ -43,29 +44,17 @@ impl CngDtlsCert {
             )
             .map_err(from_win_err)?;
 
-            /*let mut key_provider_info = CRYPT_KEY_PROV_INFO::default();
-            key_provider_info.dwFlags = CRYPT_KEY_FLAGS(NCRYPT_SILENT_FLAG.0);
-            key_provider_info.dwKeySpec = AT_KEYEXCHANGE.0;
+            let sig_alg = CRYPT_ALGORITHM_IDENTIFIER {
+                pszObjId: PSTR::from_raw(szOID_RSA_SHA256RSA.as_ptr() as *mut u8),
+                Parameters: CRYPT_INTEGER_BLOB::default(),
+            };
 
-            let mut provider_handle = NCRYPT_PROV_HANDLE::default();
-            let mut key_handle = NCRYPT_KEY_HANDLE::default();
-            NCryptOpenStorageProvider(&mut provider_handle, None, 0).map_err(from_win_err)?;
-            NCryptCreatePersistedKey(
-                provider_handle,
-                &mut key_handle,
-                BCRYPT_RSA_ALGORITHM,
-                None,
-                AT_KEYEXCHANGE,
-                NCRYPT_FLAGS(0),
-            )
-            .map_err(from_win_err)?;
-            NCryptFinalizeKey(key_handle, NCRYPT_SILENT_FLAG).map_err(from_win_err)?;*/
             let cert_context = CertCreateSelfSignCertificate(
-                HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(0), //key_handle.0),
+                HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(0),
                 &name_blob,
                 CERT_CREATE_SELFSIGN_FLAGS(0),
-                None, //Some(&key_provider_info),
                 None,
+                Some(&sig_alg),
                 None,
                 None,
                 None,
