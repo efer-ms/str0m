@@ -81,7 +81,7 @@ pub fn cert_fingerprint(cert_context: *const CERT_CONTEXT) -> Fingerprint {
         let mut hash_object_size = [0u8; 4];
         let mut hash_object_size_size: u32 = 4;
         if let Err(e) = from_ntstatus_result(BCryptGetProperty(
-            BCRYPT_HMAC_SHA256_ALG_HANDLE,
+            BCRYPT_SHA256_ALG_HANDLE,
             BCRYPT_OBJECT_LENGTH,
             Some(&mut hash_object_size),
             &mut hash_object_size_size,
@@ -94,7 +94,7 @@ pub fn cert_fingerprint(cert_context: *const CERT_CONTEXT) -> Fingerprint {
 
         let mut hash_handle = BCRYPT_HASH_HANDLE::default();
         if let Err(e) = from_ntstatus_result(BCryptCreateHash(
-            BCRYPT_HMAC_SHA256_ALG_HANDLE,
+            BCRYPT_SHA256_ALG_HANDLE,
             &mut hash_handle,
             Some(&mut hash_object),
             None,
