@@ -37,6 +37,8 @@ pub fn srtp_replay_attack_rtp_mode() -> Result<(), RtcError> {
     let mut time = 0;
     let mut send_count = 0;
     const TIME_INTERVAL: u32 = 960;
+    progress_with_replay(&mut l, &mut r, 1)?;
+    progress_with_replay(&mut l, &mut r, 1)?;
 
     loop {
         if l.start + l.duration() > write_at && send_count < EXPECTED_PACKETS {
@@ -222,7 +224,8 @@ pub fn progress_with_replay(
             }
             Output::Transmit(v) => {
                 let data = v.contents;
-                for _ in 0..replay {
+                for n in 0..replay {
+                    println!("Replay {}", n);
                     let input = Input::Receive(
                         f.last,
                         Receive {

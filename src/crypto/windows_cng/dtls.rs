@@ -146,6 +146,9 @@ impl CngDtlsImpl {
                 None,
                 ISC_REQ_CONFIDENTIALITY
                     | ISC_REQ_EXTENDED_ERROR
+                    | ISC_REQ_INTEGRITY
+                    | ISC_REQ_REPLAY_DETECT
+                    | ISC_REQ_SEQUENCE_DETECT
                     | ISC_REQ_DATAGRAM
                     | ISC_REQ_MANUAL_CRED_VALIDATION
                     | ISC_REQ_USE_SUPPLIED_CREDS,
@@ -280,6 +283,9 @@ impl CngDtlsImpl {
                 in_buffer_desc,
                 ASC_REQ_CONFIDENTIALITY
                     | ASC_REQ_EXTENDED_ERROR
+                    | ASC_REQ_INTEGRITY
+                    | ASC_REQ_REPLAY_DETECT
+                    | ASC_REQ_SEQUENCE_DETECT
                     | ASC_REQ_DATAGRAM // Datagram mode
                     | ASC_REQ_MUTUAL_AUTH, // Make sure we ask for the client cert
                 SECURITY_NATIVE_DREP,
@@ -428,6 +434,7 @@ impl CngDtlsImpl {
             let trailer_size = self.encrypt_message_input_sizes.cbTrailer as usize;
 
             let output = datagram.to_vec();
+            let alert = [0u8; 512];
 
             let sec_buffers = [
                 SecBuffer {
@@ -450,6 +457,11 @@ impl CngDtlsImpl {
                     BufferType: SECBUFFER_EMPTY,
                     pvBuffer: std::ptr::null_mut(),
                 },
+                SecBuffer {
+                    BufferType: SECBUFFER_ALERT,
+                    cbBuffer: alert.len() as u32,
+                    pvBuffer: &alert[0] as *const _ as *mut _,
+                },
             ];
             let sec_buffer_desc = SecBufferDesc {
                 ulVersion: SECBUFFER_VERSION,
@@ -460,6 +472,15 @@ impl CngDtlsImpl {
             println!("Before Decrypt {:02x?}", output);
             let status = DecryptMessage(ctx_handle, &sec_buffer_desc, 0, None);
             let data = output[header_size..output.len() - trailer_size].to_vec();
+            if sec_buffers[3].cbBuffer > 0 {
+                println!(
+                    "ALERT {:02x?}",
+                    std::slice::from_raw_parts(
+                        sec_buffers[3].pvBuffer as *const u8,
+                        sec_buffers[3].cbBuffer as usize
+                    )
+                )
+            }
             println!(
                 "Decrypt Message {:?} {} {:02x?}",
                 sec_buffers[1], status, data
@@ -644,7 +665,7 @@ impl DtlsInner for CngDtlsImpl {
 
             println!("Before Encrypt {:02x?}", data);
             let status = EncryptMessage(ctx_handle, 0, &sec_buffer_desc, 0);
-            println!("Encrypt Message {} {:02x?}", status, output);
+            println!("Encrypt Message {} {:02x?}", status, output,);
             self.output.push_back(output);
         }
         Ok(())

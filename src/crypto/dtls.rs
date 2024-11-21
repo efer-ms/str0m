@@ -46,15 +46,15 @@ enum DtlsCertInner {
 }
 
 impl DtlsCert {
-    /// Create a new OpenSSL variant of the certificate.
     #[cfg(feature = "openssl")]
+    /// Create a new OpenSSL variant of the certificate.
     pub fn new_openssl() -> Self {
         let cert = super::ossl::OsslDtlsCert::new();
         DtlsCert(DtlsCertInner::OpenSsl(cert))
     }
 
-    /// Create a new Windows CNG variant of the certificate.
     #[cfg(feature = "windows_cng")]
+    /// Create a new Windows CNG variant of the certificate.
     pub fn new_windows_cng() -> Self {
         let cert = super::windows_cng::CngDtlsCert::new();
         DtlsCert(DtlsCertInner::WindowsCng(cert))
