@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{SEC_E_OK, SEC_I_CONTINUE_NEEDED, SEC_I_MESSAGE_FRAGMENT};
+use windows::Win32::Foundation::{
+    SEC_E_MESSAGE_ALTERED, SEC_E_OK, SEC_E_OUT_OF_SEQUENCE, SEC_I_CONTEXT_EXPIRED,
+    SEC_I_CONTINUE_NEEDED, SEC_I_MESSAGE_FRAGMENT, SEC_I_RENEGOTIATE,
+};
 use windows::Win32::Security::{Authentication::Identity::*, Credentials::*, Cryptography::*};
 
 use crate::crypto::dtls::DtlsInner;
@@ -47,8 +50,7 @@ const DTLS_KEY_LABEL: &[u8] = b"EXTRACTOR-dtls_srtp\0";
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HandshakeState {
     Idle,
-    ClientHandshake,
-    ServerHandshake,
+    Handshake,
     Completed,
     Failed,
 }
@@ -77,11 +79,14 @@ impl CngDtlsImpl {
         })
     }
 
-    fn client_handshake(
+    fn handshake(
         &mut self,
         datagram: Option<&[u8]>,
         output_events: &mut VecDeque<DtlsEvent>,
     ) -> Result<(), CryptoError> {
+        let is_client = self
+            .is_client
+            .ok_or_else(|| CngError("handshake attempted without setting is_client".to_string()))?;
         let mut new_ctx_handle = SecHandle::default();
 
         let in_buffer_desc = match datagram {
@@ -99,10 +104,15 @@ impl CngDtlsImpl {
                         BufferType: SECBUFFER_EMPTY,
                         pvBuffer: std::ptr::null_mut(),
                     },
+                    SecBuffer {
+                        cbBuffer: 0,
+                        BufferType: SECBUFFER_EXTRA,
+                        pvBuffer: std::ptr::null_mut(),
+                    },
                 ];
                 SecBufferDesc {
                     ulVersion: SECBUFFER_VERSION,
-                    cBuffers: 4,
+                    cBuffers: buffers.len() as u32,
                     pBuffers: &buffers[0] as *const _ as *mut _,
                 }
             }
@@ -129,138 +139,6 @@ impl CngDtlsImpl {
             },
         ];
         let mut out_buffer_desc = SecBufferDesc {
-            cBuffers: 2,
-            pBuffers: &out_buffers[0] as *const _ as *mut _,
-            ulVersion: SECBUFFER_VERSION,
-        };
-
-        unsafe {
-            debug!("Connect");
-            let mut attrs = 0;
-            let status = InitializeSecurityContextW(
-                self.cred_handle.as_ref().map(|r| r as *const _),
-                self.security_ctx.as_ref().map(|r| r as *const _),
-                None,
-                ISC_REQ_CONFIDENTIALITY
-                    | ISC_REQ_EXTENDED_ERROR
-                    | ISC_REQ_INTEGRITY
-                    | ISC_REQ_DATAGRAM
-                    | ISC_REQ_MANUAL_CRED_VALIDATION
-                    | ISC_REQ_USE_SUPPLIED_CREDS,
-                0,
-                SECURITY_NATIVE_DREP,
-                Some(&in_buffer_desc),
-                0,
-                Some(&mut new_ctx_handle),
-                Some(&mut out_buffer_desc),
-                &mut attrs,
-                None,
-            );
-            debug!("DTLS Handshake Connect status: {status}");
-            self.security_ctx = Some(new_ctx_handle);
-            if out_buffers[0].cbBuffer > 0 {
-                let len = out_buffers[0].cbBuffer;
-                self.output.push_back(token_buffer[..len as usize].to_vec());
-            }
-            return match status {
-                SEC_E_OK => {
-                    // Move to Done
-                    self.state = HandshakeState::Completed;
-                    self.export_srtp_keying_material(output_events)?;
-                    Ok(())
-                }
-                SEC_I_MESSAGE_FRAGMENT => self.client_handshake(None, output_events),
-                SEC_I_CONTINUE_NEEDED => {
-                    // Stay in waiting
-                    debug!("Continue needed or fragment?");
-                    Ok(())
-                }
-                e => {
-                    // Failed
-                    self.state = HandshakeState::Failed;
-                    debug!("DTLS failure: {:?}", e);
-                    Err(CngError(format!("DTLS failure: {:?}", e)).into())
-                }
-            };
-        }
-    }
-
-    fn server_handshake(
-        &mut self,
-        datagram: Option<&[u8]>,
-        output_events: &mut VecDeque<DtlsEvent>,
-    ) -> Result<(), CryptoError> {
-        let mut new_ctx_handle = SecHandle::default();
-        let in_buffer_desc = match datagram {
-            Some(datagram) => {
-                let buffers = [
-                    DTLS_MTU_SECBUFFER,
-                    SRTP_PROTECTION_PROFILES_SECBUFFER,
-                    SecBuffer {
-                        cbBuffer: datagram.len() as u32,
-                        BufferType: SECBUFFER_TOKEN,
-                        pvBuffer: datagram.as_ptr() as *mut _,
-                    },
-                    SecBuffer {
-                        cbBuffer: 0,
-                        BufferType: SECBUFFER_EXTRA,
-                        pvBuffer: std::ptr::null_mut(),
-                    },
-                    SecBuffer {
-                        cbBuffer: 0,
-                        BufferType: SECBUFFER_EMPTY,
-                        pvBuffer: std::ptr::null_mut(),
-                    },
-                ];
-                Some(&SecBufferDesc {
-                    cBuffers: 5, //if self.ctx_handle.is_none() { 5 } else { 3 },
-                    pBuffers: &buffers[0] as *const _ as *mut _,
-                    ulVersion: SECBUFFER_VERSION,
-                } as *const _)
-            }
-            None => {
-                let buffers = [
-                    DTLS_MTU_SECBUFFER,
-                    SRTP_PROTECTION_PROFILES_SECBUFFER,
-                    SecBuffer {
-                        cbBuffer: 0,
-                        BufferType: SECBUFFER_EMPTY,
-                        pvBuffer: std::ptr::null_mut(),
-                    },
-                    SecBuffer {
-                        cbBuffer: 0,
-                        BufferType: SECBUFFER_EMPTY,
-                        pvBuffer: std::ptr::null_mut(),
-                    },
-                    SecBuffer {
-                        cbBuffer: 0,
-                        BufferType: SECBUFFER_EXTRA,
-                        pvBuffer: std::ptr::null_mut(),
-                    },
-                ];
-                Some(&SecBufferDesc {
-                    cBuffers: 5,
-                    pBuffers: &buffers[0] as *const _ as *mut _,
-                    ulVersion: SECBUFFER_VERSION,
-                } as *const _)
-            }
-        };
-
-        let token_buffer = [0u8; 1280];
-        let alert_buffer = [0u8; 1280];
-        let out_buffers = [
-            SecBuffer {
-                cbBuffer: token_buffer.len() as u32,
-                BufferType: SECBUFFER_TOKEN,
-                pvBuffer: &token_buffer as *const _ as *mut _,
-            },
-            SecBuffer {
-                cbBuffer: alert_buffer.len() as u32,
-                BufferType: SECBUFFER_ALERT,
-                pvBuffer: &alert_buffer as *const _ as *mut _,
-            },
-        ];
-        let mut out_buffer_desc = SecBufferDesc {
             cBuffers: out_buffers.len() as u32,
             pBuffers: &out_buffers[0] as *const _ as *mut _,
             ulVersion: SECBUFFER_VERSION,
@@ -268,55 +146,82 @@ impl CngDtlsImpl {
 
         unsafe {
             let mut attrs = 0;
-            let status = AcceptSecurityContext(
-                self.cred_handle.as_ref().map(|r| r as *const _),
-                self.security_ctx.as_ref().map(|r| r as *const _),
-                in_buffer_desc,
-                ASC_REQ_CONFIDENTIALITY
-                    | ASC_REQ_EXTENDED_ERROR
-                    | ASC_REQ_INTEGRITY
-                    | ASC_REQ_DATAGRAM // Datagram mode
-                    | ASC_REQ_MUTUAL_AUTH, // Make sure we ask for the client cert
-                SECURITY_NATIVE_DREP,
-                Some(&mut new_ctx_handle),
-                Some(&mut out_buffer_desc),
-                &mut attrs,
-                None,
-            );
-
-            debug!("DTLS Handshake Accept status: {status}");
+            let status = if is_client {
+                // Client
+                debug!("InitializeSecurityContextW {:?}", in_buffer_desc);
+                InitializeSecurityContextW(
+                    self.cred_handle.as_ref().map(|r| r as *const _),
+                    self.security_ctx.as_ref().map(|r| r as *const _),
+                    None,
+                    ISC_REQ_CONFIDENTIALITY
+                        | ISC_REQ_EXTENDED_ERROR
+                        | ISC_REQ_INTEGRITY
+                        | ISC_REQ_DATAGRAM
+                        | ISC_REQ_MANUAL_CRED_VALIDATION
+                        | ISC_REQ_USE_SUPPLIED_CREDS,
+                    0,
+                    SECURITY_NATIVE_DREP,
+                    Some(&in_buffer_desc),
+                    0,
+                    Some(&mut new_ctx_handle),
+                    Some(&mut out_buffer_desc),
+                    &mut attrs,
+                    None,
+                )
+            } else {
+                // Server
+                debug!("AcceptSecurityContext {:?}", in_buffer_desc);
+                AcceptSecurityContext(
+                    self.cred_handle.as_ref().map(|r| r as *const _),
+                    self.security_ctx.as_ref().map(|r| r as *const _),
+                    Some(&in_buffer_desc),
+                    ASC_REQ_CONFIDENTIALITY
+                        | ASC_REQ_EXTENDED_ERROR
+                        | ASC_REQ_INTEGRITY
+                        | ASC_REQ_DATAGRAM
+                        | ASC_REQ_MUTUAL_AUTH,
+                    SECURITY_NATIVE_DREP,
+                    Some(&mut new_ctx_handle),
+                    Some(&mut out_buffer_desc),
+                    &mut attrs,
+                    None,
+                )
+            };
+            debug!("DTLS Handshake status: {status}");
             self.security_ctx = Some(new_ctx_handle);
             if out_buffers[0].cbBuffer > 0 {
                 let len = out_buffers[0].cbBuffer;
                 self.output.push_back(token_buffer[..len as usize].to_vec());
             }
-
             return match status {
                 SEC_E_OK => {
                     // Move to Done
-                    self.state = HandshakeState::Completed;
-                    self.export_srtp_keying_material(output_events)?;
+                    self.transition_to_completed(output_events)
+                }
+                SEC_I_CONTINUE_NEEDED => {
+                    // Stay in handshake while we wait for the other side to respond.
+                    debug!("Wait for peer");
                     Ok(())
                 }
-                SEC_I_MESSAGE_FRAGMENT => self.server_handshake(None, output_events),
-                SEC_I_CONTINUE_NEEDED => {
-                    // Stay in waiting
-                    Ok(())
+                SEC_I_MESSAGE_FRAGMENT => {
+                    // Fragment was sent, we need to call again to send the next fragment.
+                    debug!("Sent handshake fragment");
+                    self.handshake(None, output_events)
                 }
                 e => {
                     // Failed
                     self.state = HandshakeState::Failed;
-                    debug!("DTLS failure: {:?}", e);
-                    Err(CngError(format!("DTLS failure: {:?}", e)).into())
+                    Err(CngError(format!("DTLS handshake failure: {:?}", e)).into())
                 }
             };
         }
     }
 
-    fn export_srtp_keying_material(
+    fn transition_to_completed(
         &mut self,
         output_events: &mut VecDeque<DtlsEvent>,
     ) -> Result<(), CryptoError> {
+        self.state = HandshakeState::Completed;
         output_events.push_back(DtlsEvent::Connected);
 
         unsafe {
@@ -452,13 +357,40 @@ impl CngDtlsImpl {
                 SEC_E_OK => {
                     let data = output[header_size..output.len() - trailer_size].to_vec();
                     output_events.push_back(DtlsEvent::Data(data));
+                    Ok(())
                 }
-                status => {
-                    println!("Non-OK Response To Decrypt: {}", status);
+                SEC_E_MESSAGE_ALTERED => {
+                    warn!("Packet alteration detected, packet dropped");
+                    Ok(())
                 }
+                SEC_E_OUT_OF_SEQUENCE => {
+                    warn!("Received out of sequence packet");
+                    Ok(())
+                }
+                SEC_I_CONTEXT_EXPIRED => {
+                    self.state = HandshakeState::Failed;
+                    Err(CngError("Context expired".to_string()).into())
+                }
+                SEC_I_RENEGOTIATE => {
+                    // SChannel provides a token to feed into a new handshake
+                    if let Some(token_buffer) =
+                        sec_buffers.iter().find(|p| p.BufferType == SECBUFFER_EXTRA)
+                    {
+                        self.state = HandshakeState::Handshake;
+                        let data = token_buffer.pvBuffer as *mut u8;
+                        let len = token_buffer.cbBuffer as usize;
+                        self.handshake(Some(std::slice::from_raw_parts(data, len)), output_events)
+                    } else {
+                        Err(CngError("Renegotiate didn't include a token".to_string()).into())
+                    }
+                }
+                status => Err(CngError(format!(
+                    "DecryptMessage returned error, message dropped. Status: {}",
+                    status
+                ))
+                .into()),
             }
         }
-        Ok(())
     }
 }
 
@@ -541,11 +473,7 @@ impl DtlsInner for CngDtlsImpl {
             self.cred_handle = Some(cred_handle);
         }
 
-        if active {
-            self.state = HandshakeState::ClientHandshake;
-        } else {
-            self.state = HandshakeState::ServerHandshake;
-        }
+        self.state = HandshakeState::Handshake;
     }
 
     fn is_active(&self) -> Option<bool> {
@@ -560,8 +488,7 @@ impl DtlsInner for CngDtlsImpl {
         let state = self.state;
         match state {
             HandshakeState::Completed => self.process_packet(datagram, output_events),
-            HandshakeState::ClientHandshake => self.client_handshake(Some(datagram), output_events),
-            HandshakeState::ServerHandshake => self.server_handshake(Some(datagram), output_events),
+            HandshakeState::Handshake => self.handshake(Some(datagram), output_events),
             HandshakeState::Failed => Err(CngError("Handshake failed".to_string()).into()),
             HandshakeState::Idle => Err(CngError("Handshake not initialized".to_string()).into()),
         }
@@ -580,9 +507,9 @@ impl DtlsInner for CngDtlsImpl {
 
     fn poll_timeout(&mut self, now: Instant) -> Option<Instant> {
         match self.state {
-            HandshakeState::Idle
-            | HandshakeState::ClientHandshake
-            | HandshakeState::ServerHandshake => Some(now + Duration::from_millis(500)),
+            HandshakeState::Idle | HandshakeState::Handshake => {
+                Some(now + Duration::from_millis(500))
+            }
             _ => None,
         }
     }
@@ -638,13 +565,15 @@ impl DtlsInner for CngDtlsImpl {
             match status {
                 SEC_E_OK => {
                     self.output.push_back(output);
+                    Ok(())
                 }
-                status => {
-                    println!("Non-OK Response To Encrypt: {}", status);
-                }
+                status => Err(CngError(format!(
+                    "EncryptMessage returned error, message dropped. Status: {}",
+                    status
+                ))
+                .into()),
             }
         }
-        Ok(())
     }
 
     fn is_connected(&self) -> bool {
@@ -652,8 +581,8 @@ impl DtlsInner for CngDtlsImpl {
     }
 
     fn handle_handshake(&mut self, output: &mut VecDeque<DtlsEvent>) -> Result<bool, CryptoError> {
-        if self.state == HandshakeState::ClientHandshake {
-            self.client_handshake(None, output)?;
+        if self.state == HandshakeState::Handshake && self.is_client == Some(true) {
+            self.handshake(None, output)?;
         }
         Ok(false)
     }

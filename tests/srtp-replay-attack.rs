@@ -38,7 +38,6 @@ pub fn srtp_replay_attack_rtp_mode() -> Result<(), RtcError> {
     let mut send_count = 0;
     const TIME_INTERVAL: u32 = 960;
     progress_with_replay(&mut l, &mut r, 1)?;
-    progress_with_replay(&mut l, &mut r, 1)?;
 
     loop {
         if l.start + l.duration() > write_at && send_count < EXPECTED_PACKETS {
@@ -141,7 +140,6 @@ pub fn srtp_replay_attack_frame_mode() -> Result<(), RtcError> {
     let mut send_count = 0;
     const TIME_INTERVAL: u32 = 960;
 
-    progress_with_replay(&mut l, &mut r, 1)?;
     progress_with_replay(&mut l, &mut r, 1)?;
 
     loop {
