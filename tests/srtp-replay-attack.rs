@@ -37,6 +37,8 @@ pub fn srtp_replay_attack_rtp_mode() -> Result<(), RtcError> {
     let mut time = 0;
     let mut send_count = 0;
     const TIME_INTERVAL: u32 = 960;
+
+    // Process the DTLS Handshake, before we start duplicating SRTP packets
     progress_with_replay(&mut l, &mut r, 1)?;
 
     loop {
@@ -140,6 +142,7 @@ pub fn srtp_replay_attack_frame_mode() -> Result<(), RtcError> {
     let mut send_count = 0;
     const TIME_INTERVAL: u32 = 960;
 
+    // Process the DTLS Handshake, before we start duplicating SRTP packets
     progress_with_replay(&mut l, &mut r, 1)?;
 
     loop {
