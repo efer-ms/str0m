@@ -13,7 +13,7 @@ use crate::crypto::DtlsEvent;
 use crate::crypto::{KeyingMaterial, SrtpProfile};
 use crate::io::{DATAGRAM_MTU, DATAGRAM_MTU_WARN};
 
-use super::cert::WinCryptoDtlsCert;
+use super::cert::{create_fingerprint, WinCryptoDtlsCert};
 use super::CryptoError;
 
 #[repr(C)]
@@ -288,19 +288,16 @@ impl WinCryptoDtlsImpl {
                     WinCryptoError(format!("FreeContextBuffer Keying Material: {:?}", e))
                 })?;
 
-            let mut remote_cert_context_ptr = std::ptr::null_mut();
+            let mut peer_cert_context: *mut CERT_CONTEXT = std::ptr::null_mut();
             QueryContextAttributesA(
                 self.security_ctx.as_ref().unwrap() as *const _,
                 SECPKG_ATTR_REMOTE_CERT_CONTEXT,
-                &mut remote_cert_context_ptr as *mut _ as *mut std::ffi::c_void,
+                &mut peer_cert_context as *mut _ as *mut std::ffi::c_void,
             )
             .map_err(|e| WinCryptoError(format!("QueryContextAttributesA: {:?}", e)))?;
-            let remote_cert_context = *(remote_cert_context_ptr as *const CERT_CONTEXT);
-
-            let fingerprint = super::cert::cert_fingerprint(&remote_cert_context);
+            let peer_certificate = (peer_cert_context as *const CERT_CONTEXT).into();
+            let fingerprint = create_fingerprint(&peer_certificate)?;
             output_events.push_back(DtlsEvent::RemoteFingerprint(fingerprint));
-
-            _ = CertFreeCertificateContext(Some(remote_cert_context_ptr));
 
             Ok(())
         }
@@ -423,7 +420,7 @@ impl DtlsInner for WinCryptoDtlsImpl {
     fn set_active(&mut self, active: bool) {
         self.is_client = Some(active);
 
-        let mut cert_contexts = [self.cert.cert_context];
+        let mut cert_contexts = [self.cert.certificate.cert_context()];
 
         let schannel_cred = SCHANNEL_CRED {
             dwVersion: SCHANNEL_CRED_VERSION,

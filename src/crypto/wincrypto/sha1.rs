@@ -1,4 +1,4 @@
-use super::from_ntstatus_result;
+use super::WinCryptoError;
 use windows::Win32::Security::Cryptography::{
     BCryptCreateHash, BCryptFinishHash, BCryptHashData, BCRYPT_HASH_HANDLE,
     BCRYPT_HMAC_SHA1_ALG_HANDLE,
@@ -7,7 +7,7 @@ use windows::Win32::Security::Cryptography::{
 pub fn sha1_hmac(key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
     unsafe {
         let mut hash_handle = BCRYPT_HASH_HANDLE::default();
-        if let Err(e) = from_ntstatus_result(BCryptCreateHash(
+        if let Err(e) = WinCryptoError::from_ntstatus(BCryptCreateHash(
             BCRYPT_HMAC_SHA1_ALG_HANDLE,
             &mut hash_handle,
             None,
@@ -18,13 +18,13 @@ pub fn sha1_hmac(key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
         }
 
         for payload in payloads {
-            if let Err(e) = from_ntstatus_result(BCryptHashData(hash_handle, payload, 0)) {
+            if let Err(e) = WinCryptoError::from_ntstatus(BCryptHashData(hash_handle, payload, 0)) {
                 panic!("Failed to hash data: {e}");
             }
         }
 
         let mut hash = [0u8; 20];
-        if let Err(e) = from_ntstatus_result(BCryptFinishHash(hash_handle, &mut hash, 0)) {
+        if let Err(e) = WinCryptoError::from_ntstatus(BCryptFinishHash(hash_handle, &mut hash, 0)) {
             panic!("Failed to finish hash: {e}");
         }
         hash

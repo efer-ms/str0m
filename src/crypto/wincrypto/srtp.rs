@@ -1,6 +1,6 @@
 use std::ptr::addr_of;
 
-use super::from_ntstatus_result;
+use super::WinCryptoError;
 use crate::crypto::srtp::SrtpCryptoImpl;
 use crate::crypto::srtp::{aead_aes_128_gcm, aes_128_cm_sha1_80};
 use crate::crypto::CryptoError;
@@ -20,7 +20,7 @@ impl SrtpCryptoImpl for WinCryptoSrtpCryptoImpl {
     fn srtp_aes_128_ecb_round(key: &[u8], input: &[u8], output: &mut [u8]) {
         unsafe {
             let mut key_handle = BCRYPT_KEY_HANDLE::default();
-            from_ntstatus_result(BCryptGenerateSymmetricKey(
+            WinCryptoError::from_ntstatus(BCryptGenerateSymmetricKey(
                 BCRYPT_AES_ECB_ALG_HANDLE,
                 &mut key_handle,
                 None,
@@ -31,7 +31,7 @@ impl SrtpCryptoImpl for WinCryptoSrtpCryptoImpl {
 
             // Run AES
             let mut count = 0;
-            from_ntstatus_result(BCryptEncrypt(
+            WinCryptoError::from_ntstatus(BCryptEncrypt(
                 key_handle,
                 Some(input),
                 None,
@@ -95,7 +95,7 @@ impl WinCryptoAes128CmSha1_80 {
             let encrypted_countered_iv =
                 std::slice::from_raw_parts_mut(countered_iv.as_mut_ptr(), countered_iv.len());
             let mut _count = 0;
-            from_ntstatus_result(BCryptEncrypt(
+            WinCryptoError::from_ntstatus(BCryptEncrypt(
                 self.key_handle,
                 Some(&countered_iv[..offset]),
                 None,
@@ -125,7 +125,7 @@ impl aes_128_cm_sha1_80::CipherCtx for WinCryptoAes128CmSha1_80 {
     {
         unsafe {
             let mut key_handle = BCRYPT_KEY_HANDLE::default();
-            from_ntstatus_result(BCryptGenerateSymmetricKey(
+            WinCryptoError::from_ntstatus(BCryptGenerateSymmetricKey(
                 BCRYPT_AES_ECB_ALG_HANDLE,
                 &mut key_handle,
                 None,
@@ -174,7 +174,7 @@ impl aead_aes_128_gcm::CipherCtx for WinCryptoAeadAes128Gcm {
     {
         unsafe {
             let mut key_handle = BCRYPT_KEY_HANDLE::default();
-            from_ntstatus_result(BCryptGenerateSymmetricKey(
+            WinCryptoError::from_ntstatus(BCryptGenerateSymmetricKey(
                 BCRYPT_AES_GCM_ALG_HANDLE,
                 &mut key_handle,
                 None,
@@ -213,7 +213,7 @@ impl aead_aes_128_gcm::CipherCtx for WinCryptoAeadAes128Gcm {
             };
 
             let mut _count = 0;
-            from_ntstatus_result(BCryptEncrypt(
+            WinCryptoError::from_ntstatus(BCryptEncrypt(
                 self.key_handle,
                 Some(plain_text),
                 Some(addr_of!(auth_cipher_mode_info) as *const std::ffi::c_void),
@@ -262,7 +262,7 @@ impl aead_aes_128_gcm::CipherCtx for WinCryptoAeadAes128Gcm {
             };
 
             let mut count = 0;
-            from_ntstatus_result(BCryptDecrypt(
+            WinCryptoError::from_ntstatus(BCryptDecrypt(
                 self.key_handle,
                 Some(cipher_text),
                 Some(addr_of!(auth_cipher_mode_info) as *const std::ffi::c_void),

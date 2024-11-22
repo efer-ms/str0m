@@ -55,6 +55,7 @@ crc = "3.0.0"
 serde = { version = "1.0.152", features = ["derive"] }
 
 # Windows Crypto (CNG + SChannel)
+str0m_wincrypto = {path = "wincrypto" }
 windows = { version = "0.58", features=["Win32_Security_Cryptography", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials",], optional = true }
 windows-core = { version = "0", optional = true }
 windows-strings = { version = "0.1", optional = true }
