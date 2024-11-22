@@ -781,9 +781,6 @@ mod test {
             let srtcp_index = SRTCP.len() - HMAC_TAG_LEN - SRTCP_INDEX_LEN;
             let e_and_i = &SRTCP[srtcp_index..(srtcp_index + 4)];
             assert_eq!(e_and_i, &0x8000_0001_u32.to_be_bytes());
-
-            println!("{}", decrypted.len());
-            println!("{decrypted:02x?}");
             assert_eq!(decrypted, DECRYPTED_PAYLOAD);
 
             // Take us back to where we started.

@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate tracing;
+
 use thiserror::Error;
 use windows::Win32::Foundation::NTSTATUS;
 
@@ -6,6 +9,9 @@ pub use cert::*;
 
 mod sha1;
 pub use sha1::*;
+
+mod srtp;
+pub use srtp::*;
 
 #[derive(Error, Debug)]
 #[error("{0}")]

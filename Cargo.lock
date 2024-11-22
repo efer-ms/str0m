@@ -955,6 +955,7 @@ name = "str0m_wincrypto"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+ "tracing",
  "windows",
  "windows-core 0.52.0",
  "windows-result",
