@@ -3,13 +3,13 @@
 use super::CryptoError;
 
 mod cert;
-pub use cert::CngDtlsCert;
+pub use cert::WinCryptoDtlsCert;
 
 mod dtls;
-pub use dtls::CngDtlsImpl;
+pub use dtls::WinCryptoDtlsImpl;
 
 mod srtp;
-pub use srtp::CngSrtpCryptoImpl;
+pub use srtp::WinCryptoSrtpCryptoImpl;
 
 mod sha1;
 pub use sha1::sha1_hmac;
@@ -19,18 +19,18 @@ use windows::Win32::Foundation::NTSTATUS;
 
 #[derive(Error, Debug)]
 #[error("{0}")]
-pub struct CngError(String);
+pub struct WinCryptoError(String);
 
-fn from_win_err(err: windows_result::Error) -> CngError {
+fn from_win_err(err: windows_result::Error) -> WinCryptoError {
     let code = err.code();
-    CngError(format!("WindowsError({code})"))
+    WinCryptoError(format!("WindowsError({code})"))
 }
 
-fn from_ntstatus_result(status: NTSTATUS) -> Result<(), CngError> {
+fn from_ntstatus_result(status: NTSTATUS) -> Result<(), WinCryptoError> {
     if status.is_ok() {
         Ok(())
     } else {
         let status = status.0;
-        Err(CngError(format!("NTSTATUS({status})")))
+        Err(WinCryptoError(format!("NTSTATUS({status})")))
     }
 }

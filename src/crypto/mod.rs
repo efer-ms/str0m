@@ -6,8 +6,8 @@ use thiserror::Error;
 #[cfg(feature = "openssl")]
 mod ossl;
 
-#[cfg(feature = "windows_cng")]
-pub mod windows_cng;
+#[cfg(feature = "wincrypto")]
+pub mod wincrypto;
 
 mod dtls;
 pub use dtls::{DtlsCert, DtlsEvent, DtlsImpl};
@@ -59,9 +59,9 @@ pub fn sha1_hmac(key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
 }
 
 /// If openssl is enabled and sha1 is not, it uses `openssl` crate.
-#[cfg(all(feature = "windows_cng", not(feature = "sha1")))]
+#[cfg(all(feature = "wincrypto", not(feature = "sha1")))]
 pub fn sha1_hmac(key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
-    windows_cng::sha1_hmac(key, payloads)
+    wincrypto::sha1_hmac(key, payloads)
 }
 
 /// Errors that can arise in DTLS.
@@ -74,8 +74,8 @@ pub enum CryptoError {
 
     /// Some error from OpenSSL layer (used for DTLS).
     #[error("{0}")]
-    #[cfg(feature = "windows_cng")]
-    WindowsCng(#[from] windows_cng::CngError),
+    #[cfg(feature = "wincrypto")]
+    WinCrypto(#[from] wincrypto::WinCryptoError),
 
     /// Other IO errors.
     #[error("{0}")]

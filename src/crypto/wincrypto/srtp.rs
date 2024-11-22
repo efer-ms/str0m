@@ -1,8 +1,8 @@
 use std::ptr::addr_of;
 
+use super::from_ntstatus_result;
 use crate::crypto::srtp::SrtpCryptoImpl;
 use crate::crypto::srtp::{aead_aes_128_gcm, aes_128_cm_sha1_80};
-use crate::crypto::windows_cng::from_ntstatus_result;
 use crate::crypto::CryptoError;
 use windows::Win32::Security::Cryptography::{
     BCryptDecrypt, BCryptEncrypt, BCryptGenerateSymmetricKey, BCRYPT_AES_ECB_ALG_HANDLE,
@@ -11,11 +11,11 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_KEY_HANDLE,
 };
 
-pub struct CngSrtpCryptoImpl;
+pub struct WinCryptoSrtpCryptoImpl;
 
-impl SrtpCryptoImpl for CngSrtpCryptoImpl {
-    type Aes128CmSha1_80 = CngAes128CmSha1_80;
-    type AeadAes128Gcm = CngAeadAes128Gcm;
+impl SrtpCryptoImpl for WinCryptoSrtpCryptoImpl {
+    type Aes128CmSha1_80 = WinCryptoAes128CmSha1_80;
+    type AeadAes128Gcm = WinCryptoAeadAes128Gcm;
 
     fn srtp_aes_128_ecb_round(key: &[u8], input: &[u8], output: &mut [u8]) {
         unsafe {
@@ -47,14 +47,14 @@ impl SrtpCryptoImpl for CngSrtpCryptoImpl {
     }
 }
 
-pub struct CngAes128CmSha1_80 {
+pub struct WinCryptoAes128CmSha1_80 {
     key_handle: BCRYPT_KEY_HANDLE,
 }
 
-unsafe impl Send for CngAes128CmSha1_80 {}
-unsafe impl Sync for CngAes128CmSha1_80 {}
+unsafe impl Send for WinCryptoAes128CmSha1_80 {}
+unsafe impl Sync for WinCryptoAes128CmSha1_80 {}
 
-impl CngAes128CmSha1_80 {
+impl WinCryptoAes128CmSha1_80 {
     /// Encrypts or decrypts the input data using AES-128 in ECB-CTR mode. CTR mode essentially
     /// amounts to encrypting the a buffer with a repeated IV, each repetition incrementing the IV
     /// value by one. The encryption is using ECB mode. Then the encrypted output is XORed with the
@@ -114,7 +114,7 @@ impl CngAes128CmSha1_80 {
     }
 }
 
-impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
+impl aes_128_cm_sha1_80::CipherCtx for WinCryptoAes128CmSha1_80 {
     /// Create a new context for AES-128-CM-SHA1-80 encryption/decryption.
     ///
     /// The encrypt flag is ignored, since the same operation is used for both encryption and
@@ -133,7 +133,7 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
                 0,
             ))
             .expect("generate sym key");
-            CngAes128CmSha1_80 { key_handle }
+            WinCryptoAes128CmSha1_80 { key_handle }
         }
     }
 
@@ -156,14 +156,14 @@ impl aes_128_cm_sha1_80::CipherCtx for CngAes128CmSha1_80 {
     }
 }
 
-pub struct CngAeadAes128Gcm {
+pub struct WinCryptoAeadAes128Gcm {
     key_handle: BCRYPT_KEY_HANDLE,
 }
 
-unsafe impl Send for CngAeadAes128Gcm {}
-unsafe impl Sync for CngAeadAes128Gcm {}
+unsafe impl Send for WinCryptoAeadAes128Gcm {}
+unsafe impl Sync for WinCryptoAeadAes128Gcm {}
 
-impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
+impl aead_aes_128_gcm::CipherCtx for WinCryptoAeadAes128Gcm {
     /// Create a new context for AES-128-GCM encryption/decryption.
     ///
     /// The encrypt flag is ignored, since it is not needed and the same
@@ -183,7 +183,7 @@ impl aead_aes_128_gcm::CipherCtx for CngAeadAes128Gcm {
             ))
             .expect("generate sym key");
 
-            CngAeadAes128Gcm { key_handle }
+            WinCryptoAeadAes128Gcm { key_handle }
         }
     }
 
@@ -284,7 +284,7 @@ mod test {
     #[test]
     fn test_srtp_aes_128_ecb_round_test_vec_1() {
         let mut out = [0u8; 32];
-        CngSrtpCryptoImpl::srtp_aes_128_ecb_round(
+        WinCryptoSrtpCryptoImpl::srtp_aes_128_ecb_round(
             &hex_to_vec("2b7e151628aed2a6abf7158809cf4f3c"),
             &hex_to_vec("6bc1bee22e409f96e93d7e117393172a"),
             &mut out,
@@ -295,7 +295,7 @@ mod test {
     #[test]
     fn test_srtp_aes_128_ecb_round_test_vec_2() {
         let mut out = [0u8; 32];
-        CngSrtpCryptoImpl::srtp_aes_128_ecb_round(
+        WinCryptoSrtpCryptoImpl::srtp_aes_128_ecb_round(
             &hex_to_vec("2b7e151628aed2a6abf7158809cf4f3c"),
             &hex_to_vec("ae2d8a571e03ac9c9eb76fac45af8e51"),
             &mut out,
@@ -306,7 +306,7 @@ mod test {
     #[test]
     fn test_srtp_aes_128_ecb_round_test_vec_3() {
         let mut out = [0u8; 32];
-        CngSrtpCryptoImpl::srtp_aes_128_ecb_round(
+        WinCryptoSrtpCryptoImpl::srtp_aes_128_ecb_round(
             &hex_to_vec("2b7e151628aed2a6abf7158809cf4f3c"),
             &hex_to_vec("30c81c46a35ce411e5fbc1191a0a52ef"),
             &mut out,
@@ -317,7 +317,7 @@ mod test {
     #[test]
     fn test_srtp_aes_128_ecb_round_test_vec_4() {
         let mut out = [0u8; 32];
-        CngSrtpCryptoImpl::srtp_aes_128_ecb_round(
+        WinCryptoSrtpCryptoImpl::srtp_aes_128_ecb_round(
             &hex_to_vec("2b7e151628aed2a6abf7158809cf4f3c"),
             &hex_to_vec("f69f2445df4f9b17ad2b417be66c3710"),
             &mut out,

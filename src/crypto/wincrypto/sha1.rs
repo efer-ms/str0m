@@ -1,4 +1,4 @@
-use crate::crypto::windows_cng::from_ntstatus_result;
+use super::from_ntstatus_result;
 use windows::Win32::Security::Cryptography::{
     BCryptCreateHash, BCryptFinishHash, BCryptHashData, BCRYPT_HASH_HANDLE,
     BCRYPT_HMAC_SHA1_ALG_HANDLE,

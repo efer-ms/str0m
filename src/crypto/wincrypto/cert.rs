@@ -1,18 +1,18 @@
-use super::{from_ntstatus_result, from_win_err, CngError, CryptoError};
+use super::{from_ntstatus_result, from_win_err, CryptoError, WinCryptoError};
 use crate::crypto::dtls::DTLS_CERT_IDENTITY;
 use crate::crypto::Fingerprint;
 use windows::{core::HSTRING, Win32::Security::Cryptography::*};
 use windows_strings::PSTR;
 
 #[derive(Debug, Clone)]
-pub struct CngDtlsCert {
+pub struct WinCryptoDtlsCert {
     pub(crate) cert_context: *mut CERT_CONTEXT,
 }
 
-unsafe impl Send for CngDtlsCert {}
-unsafe impl Sync for CngDtlsCert {}
+unsafe impl Send for WinCryptoDtlsCert {}
+unsafe impl Sync for WinCryptoDtlsCert {}
 
-impl CngDtlsCert {
+impl WinCryptoDtlsCert {
     pub fn new() -> Self {
         Self::self_signed().expect("create dtls cert")
     }
@@ -64,7 +64,7 @@ impl CngDtlsCert {
             );
 
             if cert_context.is_null() {
-                Err(CngError("Failed to generate self-signed certificate".to_string()).into())
+                Err(WinCryptoError("Failed to generate self-signed certificate".to_string()).into())
             } else {
                 Ok(Self { cert_context })
             }
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn verify_self_signed() {
         unsafe {
-            let cert = super::CngDtlsCert::new();
+            let cert = super::WinCryptoDtlsCert::new();
 
             // Verify it is self-signed.
             let subject = (*(*cert.cert_context).pCertInfo).Subject;
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn verify_fingerprint() {
-        let cert = super::CngDtlsCert::new();
+        let cert = super::WinCryptoDtlsCert::new();
         let fingerprint = cert.fingerprint();
         assert_eq!(fingerprint.hash_func, "sha-256");
         assert_eq!(fingerprint.bytes.len(), 32);

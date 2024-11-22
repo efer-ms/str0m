@@ -8,12 +8,12 @@ use windows::Win32::Foundation::{
 use windows::Win32::Security::{Authentication::Identity::*, Credentials::*, Cryptography::*};
 
 use crate::crypto::dtls::DtlsInner;
-use crate::crypto::windows_cng::CngError;
+use crate::crypto::wincrypto::WinCryptoError;
 use crate::crypto::DtlsEvent;
 use crate::crypto::{KeyingMaterial, SrtpProfile};
 use crate::io::{DATAGRAM_MTU, DATAGRAM_MTU_WARN};
 
-use super::cert::CngDtlsCert;
+use super::cert::WinCryptoDtlsCert;
 use super::CryptoError;
 
 #[repr(C)]
@@ -55,8 +55,8 @@ pub enum HandshakeState {
     Failed,
 }
 
-pub struct CngDtlsImpl {
-    cert: CngDtlsCert,
+pub struct WinCryptoDtlsImpl {
+    cert: WinCryptoDtlsCert,
     is_client: Option<bool>,
     cred_handle: Option<SecHandle>,
     security_ctx: Option<SecHandle>,
@@ -66,9 +66,9 @@ pub struct CngDtlsImpl {
     output: VecDeque<Vec<u8>>,
 }
 
-impl CngDtlsImpl {
-    pub fn new(cert: CngDtlsCert) -> Result<Self, super::CryptoError> {
-        Ok(CngDtlsImpl {
+impl WinCryptoDtlsImpl {
+    pub fn new(cert: WinCryptoDtlsCert) -> Result<Self, super::CryptoError> {
+        Ok(WinCryptoDtlsImpl {
             cert,
             is_client: None,
             cred_handle: None,
@@ -84,9 +84,9 @@ impl CngDtlsImpl {
         datagram: Option<&[u8]>,
         output_events: &mut VecDeque<DtlsEvent>,
     ) -> Result<(), CryptoError> {
-        let is_client = self
-            .is_client
-            .ok_or_else(|| CngError("handshake attempted without setting is_client".to_string()))?;
+        let is_client = self.is_client.ok_or_else(|| {
+            WinCryptoError("handshake attempted without setting is_client".to_string())
+        })?;
         let mut new_ctx_handle = SecHandle::default();
 
         let in_buffer_desc = match datagram {
@@ -211,7 +211,7 @@ impl CngDtlsImpl {
                 e => {
                     // Failed
                     self.state = HandshakeState::Failed;
-                    Err(CngError(format!("DTLS handshake failure: {:?}", e)).into())
+                    Err(WinCryptoError(format!("DTLS handshake failure: {:?}", e)).into())
                 }
             };
         }
@@ -230,7 +230,7 @@ impl CngDtlsImpl {
                 SECPKG_ATTR_STREAM_SIZES,
                 &mut self.encrypt_message_input_sizes as *mut _ as *mut std::ffi::c_void,
             )
-            .map_err(|e| CngError(format!("SECPKG_ATTR_STREAM_SIZES: {:?}", e)))?;
+            .map_err(|e| WinCryptoError(format!("SECPKG_ATTR_STREAM_SIZES: {:?}", e)))?;
 
             let mut srtp_parameters = SecPkgContext_SrtpParameters::default();
             QueryContextAttributesA(
@@ -238,7 +238,9 @@ impl CngDtlsImpl {
                 SECPKG_ATTR(SECPKG_ATTR_SRTP_PARAMETERS),
                 &mut srtp_parameters as *mut _ as *mut std::ffi::c_void,
             )
-            .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
+            .map_err(|e| {
+                WinCryptoError(format!("QueryContextAttributesA Keying Material: {:?}", e))
+            })?;
 
             let srtp_profile =
                 srtp_profile_from_network_endian_id(srtp_parameters.ProtectionProfile);
@@ -255,7 +257,9 @@ impl CngDtlsImpl {
                 &keying_material_info as *const _ as *const std::ffi::c_void,
                 std::mem::size_of::<SecPkgContext_KeyingMaterialInfo>() as u32,
             )
-            .map_err(|e| CngError(format!("SetContextAttributesA Keying Material: {:?}", e)))?;
+            .map_err(|e| {
+                WinCryptoError(format!("SetContextAttributesA Keying Material: {:?}", e))
+            })?;
 
             let mut keying_material = SecPkgContext_KeyingMaterial::default();
             QueryContextAttributesExW(
@@ -264,7 +268,9 @@ impl CngDtlsImpl {
                 &mut keying_material as *mut _ as *mut std::ffi::c_void,
                 std::mem::size_of::<SecPkgContext_KeyingMaterial>() as u32,
             )
-            .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
+            .map_err(|e| {
+                WinCryptoError(format!("QueryContextAttributesA Keying Material: {:?}", e))
+            })?;
 
             output_events.push_back(DtlsEvent::SrtpKeyingMaterial(
                 KeyingMaterial::new(
@@ -278,7 +284,9 @@ impl CngDtlsImpl {
             ));
 
             FreeContextBuffer(keying_material.pbKeyingMaterial as *mut _ as *mut std::ffi::c_void)
-                .map_err(|e| CngError(format!("FreeContextBuffer Keying Material: {:?}", e)))?;
+                .map_err(|e| {
+                    WinCryptoError(format!("FreeContextBuffer Keying Material: {:?}", e))
+                })?;
 
             let mut remote_cert_context_ptr = std::ptr::null_mut();
             QueryContextAttributesA(
@@ -286,7 +294,7 @@ impl CngDtlsImpl {
                 SECPKG_ATTR_REMOTE_CERT_CONTEXT,
                 &mut remote_cert_context_ptr as *mut _ as *mut std::ffi::c_void,
             )
-            .map_err(|e| CngError(format!("QueryContextAttributesA: {:?}", e)))?;
+            .map_err(|e| WinCryptoError(format!("QueryContextAttributesA: {:?}", e)))?;
             let remote_cert_context = *(remote_cert_context_ptr as *const CERT_CONTEXT);
 
             let fingerprint = super::cert::cert_fingerprint(&remote_cert_context);
@@ -369,7 +377,7 @@ impl CngDtlsImpl {
                 }
                 SEC_I_CONTEXT_EXPIRED => {
                     self.state = HandshakeState::Failed;
-                    Err(CngError("Context expired".to_string()).into())
+                    Err(WinCryptoError("Context expired".to_string()).into())
                 }
                 SEC_I_RENEGOTIATE => {
                     // SChannel provides a token to feed into a new handshake
@@ -381,10 +389,10 @@ impl CngDtlsImpl {
                         let len = token_buffer.cbBuffer as usize;
                         self.handshake(Some(std::slice::from_raw_parts(data, len)), output_events)
                     } else {
-                        Err(CngError("Renegotiate didn't include a token".to_string()).into())
+                        Err(WinCryptoError("Renegotiate didn't include a token".to_string()).into())
                     }
                 }
-                status => Err(CngError(format!(
+                status => Err(WinCryptoError(format!(
                     "DecryptMessage returned error, message dropped. Status: {}",
                     status
                 ))
@@ -394,7 +402,7 @@ impl CngDtlsImpl {
     }
 }
 
-impl Drop for CngDtlsImpl {
+impl Drop for WinCryptoDtlsImpl {
     fn drop(&mut self) {
         unsafe {
             if let Some(ctx_handle) = self.security_ctx {
@@ -411,7 +419,7 @@ impl Drop for CngDtlsImpl {
     }
 }
 
-impl DtlsInner for CngDtlsImpl {
+impl DtlsInner for WinCryptoDtlsImpl {
     fn set_active(&mut self, active: bool) {
         self.is_client = Some(active);
 
@@ -483,8 +491,10 @@ impl DtlsInner for CngDtlsImpl {
         match state {
             HandshakeState::Completed => self.process_packet(datagram, output_events),
             HandshakeState::Handshake => self.handshake(Some(datagram), output_events),
-            HandshakeState::Failed => Err(CngError("Handshake failed".to_string()).into()),
-            HandshakeState::Idle => Err(CngError("Handshake not initialized".to_string()).into()),
+            HandshakeState::Failed => Err(WinCryptoError("Handshake failed".to_string()).into()),
+            HandshakeState::Idle => {
+                Err(WinCryptoError("Handshake not initialized".to_string()).into())
+            }
         }
     }
 
@@ -561,7 +571,7 @@ impl DtlsInner for CngDtlsImpl {
                     self.output.push_back(output);
                     Ok(())
                 }
-                status => Err(CngError(format!(
+                status => Err(WinCryptoError(format!(
                     "EncryptMessage returned error, message dropped. Status: {}",
                     status
                 ))
