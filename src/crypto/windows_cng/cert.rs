@@ -19,11 +19,11 @@ impl CngDtlsCert {
 
     fn self_signed() -> Result<Self, CryptoError> {
         unsafe {
-            let dn = HSTRING::from(format!("CN={}", DTLS_CERT_IDENTITY));
+            let subject = HSTRING::from(format!("CN={}", DTLS_CERT_IDENTITY));
             let mut name_blob = CRYPT_INTEGER_BLOB::default();
             CertStrToNameW(
                 X509_ASN_ENCODING,
-                &dn,
+                &subject,
                 CERT_OID_NAME_STR,
                 None,
                 None,
@@ -31,11 +31,12 @@ impl CngDtlsCert {
                 None,
             )
             .map_err(from_win_err)?;
-            let mut name_vec = vec![0u8; name_blob.cbData as usize];
-            name_blob.pbData = name_vec.as_mut_ptr();
+
+            let mut name_buffer = vec![0u8; name_blob.cbData as usize];
+            name_blob.pbData = name_buffer.as_mut_ptr();
             CertStrToNameW(
                 X509_ASN_ENCODING,
-                &dn,
+                &subject,
                 CERT_OID_NAME_STR,
                 None,
                 Some(name_blob.pbData),
@@ -44,11 +45,13 @@ impl CngDtlsCert {
             )
             .map_err(from_win_err)?;
 
+            // Use RSA-SHA256 for the signature, since SHA1 is deprecated.
             let sig_alg = CRYPT_ALGORITHM_IDENTIFIER {
                 pszObjId: PSTR::from_raw(szOID_RSA_SHA256RSA.as_ptr() as *mut u8),
                 Parameters: CRYPT_INTEGER_BLOB::default(),
             };
 
+            // Generate the self-signed cert.
             let cert_context = CertCreateSelfSignCertificate(
                 HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(0),
                 &name_blob,
@@ -73,10 +76,10 @@ impl CngDtlsCert {
     }
 }
 
+/// Generates a SHA256 Fingerprint for the given certificate.
 pub fn cert_fingerprint(cert_context: *const CERT_CONTEXT) -> Fingerprint {
     unsafe {
-        let mut hash = [0u8; 32];
-
+        // Determine the size of the scratch space needed to compute a SHA-256 Hash.
         let mut hash_object_size = [0u8; 4];
         let mut hash_object_size_size: u32 = 4;
         if let Err(e) = from_ntstatus_result(BCryptGetProperty(
@@ -113,13 +116,13 @@ pub fn cert_fingerprint(cert_context: *const CERT_CONTEXT) -> Fingerprint {
             panic!("Failed to hash data: {e}");
         }
 
-        if let Err(e) = from_ntstatus_result(BCryptFinishHash(hash_handle, &mut hash, 0)) {
-            panic!("Failed to finish hash: {e}");
-        }
-
-        Fingerprint {
-            hash_func: "sha-256".into(),
-            bytes: hash.to_vec(),
+        let mut hash = [0u8; 32];
+        match from_ntstatus_result(BCryptFinishHash(hash_handle, &mut hash, 0)) {
+            Ok(()) => Fingerprint {
+                hash_func: "sha-256".into(),
+                bytes: hash.to_vec(),
+            },
+            Err(e) => panic!("Failed to finish hash: {e}"),
         }
     }
 }
@@ -127,20 +130,24 @@ pub fn cert_fingerprint(cert_context: *const CERT_CONTEXT) -> Fingerprint {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn make_cert() {
+    fn verify_self_signed() {
         unsafe {
             let cert = super::CngDtlsCert::new();
-            let cert_contents = std::slice::from_raw_parts(
-                (*cert.cert_context).pbCertEncoded,
-                (*cert.cert_context).cbCertEncoded as usize,
-            );
-            println!("Cert: {:02X?}", cert_contents);
-            println!(
-                "Encoding Type: {:#?}",
-                (*cert.cert_context).dwCertEncodingType
-            );
-            let fingerprint = cert.fingerprint();
-            println!("Fingerprint: {:02X?}", fingerprint);
+
+            // Verify it is self-signed.
+            let subject = (*(*cert.cert_context).pCertInfo).Subject;
+            let subject = std::slice::from_raw_parts(subject.pbData, subject.cbData as usize);
+            let issuer = (*(*cert.cert_context).pCertInfo).Issuer;
+            let issuer = std::slice::from_raw_parts(issuer.pbData, issuer.cbData as usize);
+            assert_eq!(issuer, subject);
         }
+    }
+
+    #[test]
+    fn verify_fingerprint() {
+        let cert = super::CngDtlsCert::new();
+        let fingerprint = cert.fingerprint();
+        assert_eq!(fingerprint.hash_func, "sha-256");
+        assert_eq!(fingerprint.bytes.len(), 32);
     }
 }
