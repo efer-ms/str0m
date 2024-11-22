@@ -415,12 +415,6 @@ impl DtlsInner for CngDtlsImpl {
     fn set_active(&mut self, active: bool) {
         self.is_client = Some(active);
 
-        // OpenSSL is configured with "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH"
-        // EECDH - Ephemeral Elliptic Curve Diffie-Hellman -> CALG_ECDH_EPHEM
-        // EDH - Ephemeral Diffie-Hellman -> CALG_DH_EPHEM
-        // AESGCM - AES in Galois/Counter Mode -> CALG_AES (TODO(efer): Not sure about GCM)
-        // AES256 - AES with 256-bit key -> CALG_AES_256
-        let mut algs = [CALG_ECDH_EPHEM, CALG_DH_EPHEM]; //, CALG_AES, CALG_AES_256]; <-- AES IDs aren't supported in the API?!
         let mut cert_contexts = [self.cert.cert_context];
 
         let schannel_cred = SCHANNEL_CRED {
@@ -439,8 +433,8 @@ impl DtlsInner for CngDtlsImpl {
             cMappers: 0,
             aphMappers: std::ptr::null_mut(),
 
-            cSupportedAlgs: algs.len() as u32,
-            palgSupportedAlgs: &mut algs[0],
+            cSupportedAlgs: 0,
+            palgSupportedAlgs: std::ptr::null_mut(),
 
             dwMinimumCipherStrength: 128,
             dwMaximumCipherStrength: 256,
