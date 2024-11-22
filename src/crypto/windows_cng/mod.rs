@@ -1,6 +1,6 @@
-//! OpenSSL implementation of cryptographic functions.
+//! Windows SChannel + CNG implementation of cryptographic functions.
 
-use super::{CryptoError, SrtpProfile};
+use super::CryptoError;
 
 mod cert;
 pub use cert::CngDtlsCert;
@@ -16,18 +16,6 @@ pub use sha1::sha1_hmac;
 
 use thiserror::Error;
 use windows::Win32::Foundation::NTSTATUS;
-
-impl SrtpProfile {
-    /// What this profile is called in OpenSSL parlance.
-    pub(crate) fn _cng_name(&self) -> &'static str {
-        match self {
-            #[cfg(feature = "_internal_test_exports")]
-            SrtpProfile::PassThrough => "NULL",
-            SrtpProfile::Aes128CmSha1_80 => "SRTP_AES128_CM_SHA1_80",
-            SrtpProfile::AeadAes128Gcm => "SRTP_AEAD_AES_128_GCM",
-        }
-    }
-}
 
 #[derive(Error, Debug)]
 #[error("{0}")]

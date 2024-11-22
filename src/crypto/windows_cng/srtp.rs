@@ -66,28 +66,17 @@ impl CngAes128CmSha1_80 {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<(), CryptoError> {
-        let mut iv = iv.clone();
-        let mut intermediate_output = [0u8; 1200];
         unsafe {
-            // TODO(efer): This could be optimized, by filling an intermediate buffer with the IV
-            // incrementing by 1 each time, then executing the BCryptEncrypt once with the IV data.
-            // Since the packets are "small", we should probably just allocate the scratch space on
-            // the stack. Copy the IV to the stack, then increment the counters in the repetitions.
-            // The encrypt the IV buffer, into the output, and finally XOR with the input.
+            // First, we'll make a copy of the IV with a countered as many times as needed into a new
+            // countered_iv.
+            let mut iv = iv.clone();
+            let mut countered_iv = [0u8; 2048];
             let mut offset = 0;
             while offset <= input.len() {
                 let mut _count = 0;
                 let start = offset;
                 let end = offset + 16;
-                from_ntstatus_result(BCryptEncrypt(
-                    self.key_handle,
-                    Some(&iv[..(end - start)]),
-                    None,
-                    None,
-                    Some(&mut intermediate_output[start..end]),
-                    &mut _count,
-                    BCRYPT_FLAGS(0),
-                ))?;
+                countered_iv[start..end].copy_from_slice(&iv);
                 offset += 16;
                 for idx in 0..16 {
                     let n = iv[15 - idx];
@@ -100,13 +89,28 @@ impl CngAes128CmSha1_80 {
                 }
             }
 
-            // XOR the output with the input
-            for i in 0..input.len() {
-                output[i] = input[i] ^ intermediate_output[i];
-            }
+            // Now, we'll encrypt the countered IV. CNG can do this in-place, so we'll need a separate
+            // reference to the slice, but fool the borrow-checker, otherwise it won't like us passing
+            // the immutable and mutable reference to BCryptEncrypt.
+            let encrypted_countered_iv =
+                std::slice::from_raw_parts_mut(countered_iv.as_mut_ptr(), countered_iv.len());
+            let mut _count = 0;
+            from_ntstatus_result(BCryptEncrypt(
+                self.key_handle,
+                Some(&countered_iv[..offset]),
+                None,
+                None,
+                Some(&mut encrypted_countered_iv[..offset]),
+                &mut _count,
+                BCRYPT_FLAGS(0),
+            ))?;
 
-            Ok(())
+            // XOR the intermediate_output with the input
+            for i in 0..input.len() {
+                output[i] = input[i] ^ encrypted_countered_iv[i];
+            }
         }
+        Ok(())
     }
 }
 

@@ -16,14 +16,15 @@ use super::CryptoError;
 #[repr(C)]
 struct SrtpProtectionProfilesBuffer {
     count: u16,
-    profiles: [u8; 4], // Big-Endian Encoded values.
+    profiles: [u16; 2], // Big-Endian Encoded values.
 }
 const SRTP_PROTECTION_PROFILES_BUFFER_INSTANCE: SrtpProtectionProfilesBuffer =
     SrtpProtectionProfilesBuffer {
         count: 4,
+        // These are encoded as BE, since SChannel seemingly copies this buffer verbatim.
         profiles: [
-            0x00, 0x07, /* SRTP_AES128_GCM (RFC7714 Sec 14.2) */
-            0x00, 0x01, /* SRTP_AES128_CM_SHA1_80 (RFC5764 Section 4.1.2) */
+            u16::to_be(0x0007), /* SRTP_AES128_GCM (RFC7714 Sec 14.2) */
+            u16::to_be(0x0001), /* SRTP_AES128_CM_SHA1_80 (RFC5764 Section 4.1.2) */
         ],
     };
 const SRTP_PROTECTION_PROFILES_SECBUFFER: SecBuffer = SecBuffer {
@@ -41,6 +42,8 @@ const DTLS_MTU_SECBUFFER: SecBuffer = SecBuffer {
     pvBuffer: &DTLS_MTU_BUFFER_INSTANCE as *const _ as *mut _,
 };
 
+const DTLS_KEY_LABEL: &[u8] = b"EXTRACTOR-dtls_srtp\0";
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HandshakeState {
     Idle,
@@ -52,12 +55,10 @@ pub enum HandshakeState {
 
 pub struct CngDtlsImpl {
     cert: CngDtlsCert,
+    is_client: Option<bool>,
     cred_handle: Option<SecHandle>,
-    active: Option<bool>,
-    ctx_handle: Option<SecHandle>,
+    security_ctx: Option<SecHandle>,
     state: HandshakeState,
-    expiry: i64,
-    attrs: u32,
     encrypt_message_input_sizes: SecPkgContext_StreamSizes,
 
     output: VecDeque<Vec<u8>>,
@@ -67,12 +68,10 @@ impl CngDtlsImpl {
     pub fn new(cert: CngDtlsCert) -> Result<Self, super::CryptoError> {
         Ok(CngDtlsImpl {
             cert,
+            is_client: None,
             cred_handle: None,
-            active: None,
-            ctx_handle: None,
+            security_ctx: None,
             state: HandshakeState::Idle,
-            expiry: 0,
-            attrs: 0,
             encrypt_message_input_sizes: SecPkgContext_StreamSizes::default(),
             output: VecDeque::default(),
         })
@@ -137,9 +136,10 @@ impl CngDtlsImpl {
 
         unsafe {
             debug!("Connect");
+            let mut attrs = 0;
             let status = InitializeSecurityContextW(
                 self.cred_handle.as_ref().map(|r| r as *const _),
-                self.ctx_handle.as_ref().map(|r| r as *const _),
+                self.security_ctx.as_ref().map(|r| r as *const _),
                 None,
                 ISC_REQ_CONFIDENTIALITY
                     | ISC_REQ_EXTENDED_ERROR
@@ -153,11 +153,11 @@ impl CngDtlsImpl {
                 0,
                 Some(&mut new_ctx_handle),
                 Some(&mut out_buffer_desc),
-                &mut self.attrs,
-                Some(&mut self.expiry),
+                &mut attrs,
+                None,
             );
-            println!("Connect {status}");
-            self.ctx_handle = Some(new_ctx_handle);
+            debug!("DTLS Handshake Connect status: {status}");
+            self.security_ctx = Some(new_ctx_handle);
             if out_buffers[0].cbBuffer > 0 {
                 let len = out_buffers[0].cbBuffer;
                 self.output.push_back(token_buffer[..len as usize].to_vec());
@@ -267,9 +267,10 @@ impl CngDtlsImpl {
         };
 
         unsafe {
+            let mut attrs = 0;
             let status = AcceptSecurityContext(
                 self.cred_handle.as_ref().map(|r| r as *const _),
-                self.ctx_handle.as_ref().map(|r| r as *const _),
+                self.security_ctx.as_ref().map(|r| r as *const _),
                 in_buffer_desc,
                 ASC_REQ_CONFIDENTIALITY
                     | ASC_REQ_EXTENDED_ERROR
@@ -279,12 +280,12 @@ impl CngDtlsImpl {
                 SECURITY_NATIVE_DREP,
                 Some(&mut new_ctx_handle),
                 Some(&mut out_buffer_desc),
-                &mut self.attrs,
-                Some(&mut self.expiry),
+                &mut attrs,
+                None,
             );
 
-            println!("Accept {status}");
-            self.ctx_handle = Some(new_ctx_handle);
+            debug!("DTLS Handshake Accept status: {status}");
+            self.security_ctx = Some(new_ctx_handle);
             if out_buffers[0].cbBuffer > 0 {
                 let len = out_buffers[0].cbBuffer;
                 self.output.push_back(token_buffer[..len as usize].to_vec());
@@ -320,7 +321,7 @@ impl CngDtlsImpl {
 
         unsafe {
             QueryContextAttributesW(
-                self.ctx_handle.as_ref().unwrap() as *const _,
+                self.security_ctx.as_ref().unwrap() as *const _,
                 SECPKG_ATTR_STREAM_SIZES,
                 &mut self.encrypt_message_input_sizes as *mut _ as *mut std::ffi::c_void,
             )
@@ -328,22 +329,23 @@ impl CngDtlsImpl {
 
             let mut srtp_parameters = SecPkgContext_SrtpParameters::default();
             QueryContextAttributesA(
-                self.ctx_handle.as_ref().unwrap() as *const _,
+                self.security_ctx.as_ref().unwrap() as *const _,
                 SECPKG_ATTR(SECPKG_ATTR_SRTP_PARAMETERS),
                 &mut srtp_parameters as *mut _ as *mut std::ffi::c_void,
             )
             .map_err(|e| CngError(format!("QueryContextAttributesA Keying Material: {:?}", e)))?;
 
-            let label = b"EXTRACTOR-dtls_srtp\0";
+            let srtp_profile =
+                srtp_profile_from_network_endian_id(srtp_parameters.ProtectionProfile);
             let keying_material_info = SecPkgContext_KeyingMaterialInfo {
-                cbLabel: label.len() as u16,
-                pszLabel: windows_strings::PSTR(label.as_ptr() as *mut u8),
-                cbKeyingMaterial: 60, //56,
+                cbLabel: DTLS_KEY_LABEL.len() as u16,
+                pszLabel: windows_strings::PSTR(DTLS_KEY_LABEL.as_ptr() as *mut u8),
+                cbKeyingMaterial: srtp_profile.keying_material_len() as u32,
                 cbContextValue: 0,
                 pbContextValue: std::ptr::null_mut(),
             };
             SetContextAttributesW(
-                self.ctx_handle.as_ref().unwrap() as *const _,
+                self.security_ctx.as_ref().unwrap() as *const _,
                 SECPKG_ATTR_KEYING_MATERIAL_INFO,
                 &keying_material_info as *const _ as *const std::ffi::c_void,
                 std::mem::size_of::<SecPkgContext_KeyingMaterialInfo>() as u32,
@@ -352,7 +354,7 @@ impl CngDtlsImpl {
 
             let mut keying_material = SecPkgContext_KeyingMaterial::default();
             QueryContextAttributesExW(
-                self.ctx_handle.as_ref().unwrap() as *const _,
+                self.security_ctx.as_ref().unwrap() as *const _,
                 SECPKG_ATTR(SECPKG_ATTR_KEYING_MATERIAL),
                 &mut keying_material as *mut _ as *mut std::ffi::c_void,
                 std::mem::size_of::<SecPkgContext_KeyingMaterial>() as u32,
@@ -367,12 +369,15 @@ impl CngDtlsImpl {
                     )
                     .to_vec(),
                 ),
-                srtp_profile_from_id(srtp_parameters.ProtectionProfile),
+                srtp_profile,
             ));
+
+            FreeContextBuffer(keying_material.pbKeyingMaterial as *mut _ as *mut std::ffi::c_void)
+                .map_err(|e| CngError(format!("FreeContextBuffer Keying Material: {:?}", e)))?;
 
             let mut remote_cert_context_ptr = std::ptr::null_mut();
             QueryContextAttributesA(
-                self.ctx_handle.as_ref().unwrap() as *const _,
+                self.security_ctx.as_ref().unwrap() as *const _,
                 SECPKG_ATTR_REMOTE_CERT_CONTEXT,
                 &mut remote_cert_context_ptr as *mut _ as *mut std::ffi::c_void,
             )
@@ -400,7 +405,7 @@ impl CngDtlsImpl {
             )
             .into());
         }
-        let ctx_handle = self.ctx_handle.as_ref().expect("No ctx!?");
+        let security_ctx = self.security_ctx.as_ref().expect("No ctx!?");
 
         unsafe {
             let header_size = self.encrypt_message_input_sizes.cbHeader as usize;
@@ -442,7 +447,7 @@ impl CngDtlsImpl {
                 pBuffers: &sec_buffers[0] as *const _ as *mut _,
             };
 
-            let status = DecryptMessage(ctx_handle, &sec_buffer_desc, 0, None);
+            let status = DecryptMessage(security_ctx, &sec_buffer_desc, 0, None);
             match status {
                 SEC_E_OK => {
                     let data = output[header_size..output.len() - trailer_size].to_vec();
@@ -457,9 +462,26 @@ impl CngDtlsImpl {
     }
 }
 
+impl Drop for CngDtlsImpl {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(ctx_handle) = self.security_ctx {
+                if let Err(e) = DeleteSecurityContext(&ctx_handle) {
+                    error!("DeleteSecurityContext on Drop failed: {:?}", e);
+                }
+            }
+            if let Some(cred_handle) = self.cred_handle {
+                if let Err(e) = FreeCredentialsHandle(&cred_handle) {
+                    error!("FreeCredentialsHandle on Drop failed: {:?}", e);
+                }
+            }
+        }
+    }
+}
+
 impl DtlsInner for CngDtlsImpl {
     fn set_active(&mut self, active: bool) {
-        self.active = Some(active);
+        self.is_client = Some(active);
 
         // OpenSSL is configured with "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH"
         // EECDH - Ephemeral Elliptic Curve Diffie-Hellman -> CALG_ECDH_EPHEM
@@ -527,7 +549,7 @@ impl DtlsInner for CngDtlsImpl {
     }
 
     fn is_active(&self) -> Option<bool> {
-        self.active
+        self.is_client
     }
 
     fn handle_receive(
@@ -574,7 +596,7 @@ impl DtlsInner for CngDtlsImpl {
             )
             .into());
         }
-        let ctx_handle = self.ctx_handle.as_ref().expect("No ctx!?");
+        let ctx_handle = self.security_ctx.as_ref().expect("No ctx!?");
 
         unsafe {
             let header_size = self.encrypt_message_input_sizes.cbHeader as usize;
@@ -637,13 +659,11 @@ impl DtlsInner for CngDtlsImpl {
     }
 }
 
-fn srtp_profile_from_id(id: u16) -> SrtpProfile {
-    println!("strpProfileFromId: {}", id);
-    match id {
-        0x0007 => SrtpProfile::AeadAes128Gcm,
-        0x0700 => SrtpProfile::AeadAes128Gcm,
+fn srtp_profile_from_network_endian_id(network_endian_id: u16) -> SrtpProfile {
+    let native_endian_id = u16::from_be(network_endian_id);
+    match native_endian_id {
         0x0001 => SrtpProfile::Aes128CmSha1_80,
-        0x0100 => SrtpProfile::Aes128CmSha1_80,
-        _ => panic!("Unknown SRTP profile ID: {:04x}", id),
+        0x0007 => SrtpProfile::AeadAes128Gcm,
+        _ => panic!("Unknown SRTP profile ID: {:04x}", native_endian_id),
     }
 }

@@ -69,7 +69,6 @@ impl CngDtlsCert {
     }
 
     pub fn fingerprint(&self) -> Fingerprint {
-        println!("local fingerprint: {}", cert_fingerprint(self.cert_context));
         cert_fingerprint(self.cert_context)
     }
 }
