@@ -8,13 +8,13 @@ use windows::Win32::Foundation::{
 use windows::Win32::Security::{Authentication::Identity::*, Credentials::*, Cryptography::*};
 
 use crate::crypto::dtls::DtlsInner;
-use crate::crypto::wincrypto::WinCryptoError;
 use crate::crypto::DtlsEvent;
 use crate::crypto::{KeyingMaterial, SrtpProfile};
 use crate::io::{DATAGRAM_MTU, DATAGRAM_MTU_WARN};
 
 use super::cert::{create_fingerprint, WinCryptoDtlsCert};
 use super::CryptoError;
+use str0m_wincrypto::WinCryptoError;
 
 #[repr(C)]
 struct SrtpProtectionProfilesBuffer {
@@ -48,10 +48,10 @@ const DTLS_MTU_SECBUFFER: SecBuffer = SecBuffer {
 const DTLS_KEY_LABEL: &[u8] = b"EXTRACTOR-dtls_srtp\0";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum HandshakeState {
+pub enum EstablishmentState {
     Idle,
-    Handshake,
-    Completed,
+    Handshaking,
+    Established,
     Failed,
 }
 
@@ -60,7 +60,7 @@ pub struct WinCryptoDtlsImpl {
     is_client: Option<bool>,
     cred_handle: Option<SecHandle>,
     security_ctx: Option<SecHandle>,
-    state: HandshakeState,
+    state: EstablishmentState,
     encrypt_message_input_sizes: SecPkgContext_StreamSizes,
 
     output: VecDeque<Vec<u8>>,
@@ -73,7 +73,7 @@ impl WinCryptoDtlsImpl {
             is_client: None,
             cred_handle: None,
             security_ctx: None,
-            state: HandshakeState::Idle,
+            state: EstablishmentState::Idle,
             encrypt_message_input_sizes: SecPkgContext_StreamSizes::default(),
             output: VecDeque::default(),
         })
@@ -210,7 +210,7 @@ impl WinCryptoDtlsImpl {
                 }
                 e => {
                     // Failed
-                    self.state = HandshakeState::Failed;
+                    self.state = EstablishmentState::Failed;
                     Err(WinCryptoError(format!("DTLS handshake failure: {:?}", e)).into())
                 }
             };
@@ -221,7 +221,7 @@ impl WinCryptoDtlsImpl {
         &mut self,
         output_events: &mut VecDeque<DtlsEvent>,
     ) -> Result<(), CryptoError> {
-        self.state = HandshakeState::Completed;
+        self.state = EstablishmentState::Established;
         output_events.push_back(DtlsEvent::Connected);
 
         unsafe {
@@ -308,7 +308,7 @@ impl WinCryptoDtlsImpl {
         datagram: &[u8],
         output_events: &mut VecDeque<DtlsEvent>,
     ) -> Result<(), CryptoError> {
-        if self.state != HandshakeState::Completed {
+        if self.state != EstablishmentState::Established {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "Not ready".to_string(),
@@ -317,46 +317,46 @@ impl WinCryptoDtlsImpl {
         }
         let security_ctx = self.security_ctx.as_ref().expect("No ctx!?");
 
+        let header_size = self.encrypt_message_input_sizes.cbHeader as usize;
+        let trailer_size = self.encrypt_message_input_sizes.cbTrailer as usize;
+
+        let output = datagram.to_vec();
+        let alert = [0u8; 512];
+
+        let sec_buffers = [
+            SecBuffer {
+                BufferType: SECBUFFER_DATA,
+                cbBuffer: output.len() as u32,
+                pvBuffer: &output[0] as *const _ as *mut _,
+            },
+            SecBuffer {
+                cbBuffer: 0,
+                BufferType: SECBUFFER_EMPTY,
+                pvBuffer: std::ptr::null_mut(),
+            },
+            SecBuffer {
+                cbBuffer: 0,
+                BufferType: SECBUFFER_EMPTY,
+                pvBuffer: std::ptr::null_mut(),
+            },
+            SecBuffer {
+                cbBuffer: 0,
+                BufferType: SECBUFFER_EMPTY,
+                pvBuffer: std::ptr::null_mut(),
+            },
+            SecBuffer {
+                BufferType: SECBUFFER_ALERT,
+                cbBuffer: alert.len() as u32,
+                pvBuffer: &alert[0] as *const _ as *mut _,
+            },
+        ];
+        let sec_buffer_desc = SecBufferDesc {
+            ulVersion: SECBUFFER_VERSION,
+            cBuffers: 4,
+            pBuffers: &sec_buffers[0] as *const _ as *mut _,
+        };
+
         unsafe {
-            let header_size = self.encrypt_message_input_sizes.cbHeader as usize;
-            let trailer_size = self.encrypt_message_input_sizes.cbTrailer as usize;
-
-            let output = datagram.to_vec();
-            let alert = [0u8; 512];
-
-            let sec_buffers = [
-                SecBuffer {
-                    BufferType: SECBUFFER_DATA,
-                    cbBuffer: output.len() as u32,
-                    pvBuffer: &output[0] as *const _ as *mut _,
-                },
-                SecBuffer {
-                    cbBuffer: 0,
-                    BufferType: SECBUFFER_EMPTY,
-                    pvBuffer: std::ptr::null_mut(),
-                },
-                SecBuffer {
-                    cbBuffer: 0,
-                    BufferType: SECBUFFER_EMPTY,
-                    pvBuffer: std::ptr::null_mut(),
-                },
-                SecBuffer {
-                    cbBuffer: 0,
-                    BufferType: SECBUFFER_EMPTY,
-                    pvBuffer: std::ptr::null_mut(),
-                },
-                SecBuffer {
-                    BufferType: SECBUFFER_ALERT,
-                    cbBuffer: alert.len() as u32,
-                    pvBuffer: &alert[0] as *const _ as *mut _,
-                },
-            ];
-            let sec_buffer_desc = SecBufferDesc {
-                ulVersion: SECBUFFER_VERSION,
-                cBuffers: 4,
-                pBuffers: &sec_buffers[0] as *const _ as *mut _,
-            };
-
             let status = DecryptMessage(security_ctx, &sec_buffer_desc, 0, None);
             match status {
                 SEC_E_OK => {
@@ -373,7 +373,7 @@ impl WinCryptoDtlsImpl {
                     Ok(())
                 }
                 SEC_I_CONTEXT_EXPIRED => {
-                    self.state = HandshakeState::Failed;
+                    self.state = EstablishmentState::Failed;
                     Err(WinCryptoError("Context expired".to_string()).into())
                 }
                 SEC_I_RENEGOTIATE => {
@@ -381,7 +381,7 @@ impl WinCryptoDtlsImpl {
                     if let Some(token_buffer) =
                         sec_buffers.iter().find(|p| p.BufferType == SECBUFFER_EXTRA)
                     {
-                        self.state = HandshakeState::Handshake;
+                        self.state = EstablishmentState::Handshaking;
                         let data = token_buffer.pvBuffer as *mut u8;
                         let len = token_buffer.cbBuffer as usize;
                         self.handshake(Some(std::slice::from_raw_parts(data, len)), output_events)
@@ -472,7 +472,7 @@ impl DtlsInner for WinCryptoDtlsImpl {
             self.cred_handle = Some(cred_handle);
         }
 
-        self.state = HandshakeState::Handshake;
+        self.state = EstablishmentState::Handshaking;
     }
 
     fn is_active(&self) -> Option<bool> {
@@ -486,10 +486,12 @@ impl DtlsInner for WinCryptoDtlsImpl {
     ) -> Result<(), CryptoError> {
         let state = self.state;
         match state {
-            HandshakeState::Completed => self.process_packet(datagram, output_events),
-            HandshakeState::Handshake => self.handshake(Some(datagram), output_events),
-            HandshakeState::Failed => Err(WinCryptoError("Handshake failed".to_string()).into()),
-            HandshakeState::Idle => {
+            EstablishmentState::Established => self.process_packet(datagram, output_events),
+            EstablishmentState::Handshaking => self.handshake(Some(datagram), output_events),
+            EstablishmentState::Failed => {
+                Err(WinCryptoError("Handshake failed".to_string()).into())
+            }
+            EstablishmentState::Idle => {
                 Err(WinCryptoError("Handshake not initialized".to_string()).into())
             }
         }
@@ -508,7 +510,7 @@ impl DtlsInner for WinCryptoDtlsImpl {
 
     fn poll_timeout(&mut self, now: Instant) -> Option<Instant> {
         match self.state {
-            HandshakeState::Idle | HandshakeState::Handshake => {
+            EstablishmentState::Idle | EstablishmentState::Handshaking => {
                 Some(now + Duration::from_millis(500))
             }
             _ => None,
@@ -517,7 +519,7 @@ impl DtlsInner for WinCryptoDtlsImpl {
 
     // This is DATA sent from client over SCTP/DTLS
     fn handle_input(&mut self, data: &[u8]) -> Result<(), CryptoError> {
-        if self.state != HandshakeState::Completed {
+        if self.state != EstablishmentState::Established {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "Not ready".to_string(),
@@ -578,11 +580,11 @@ impl DtlsInner for WinCryptoDtlsImpl {
     }
 
     fn is_connected(&self) -> bool {
-        self.state == HandshakeState::Completed
+        self.state == EstablishmentState::Established
     }
 
     fn handle_handshake(&mut self, output: &mut VecDeque<DtlsEvent>) -> Result<bool, CryptoError> {
-        if self.state == HandshakeState::Handshake && self.is_client == Some(true) {
+        if self.state == EstablishmentState::Handshaking && self.is_client == Some(true) {
             self.handshake(None, output)?;
         }
         Ok(false)

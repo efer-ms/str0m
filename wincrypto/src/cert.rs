@@ -1,5 +1,13 @@
-use windows::{core::HSTRING, Win32::Security::Cryptography::*};
-use windows_strings::PSTR;
+use windows::{
+    core::{HSTRING, PSTR},
+    Win32::Security::Cryptography::{
+        szOID_RSA_SHA256RSA, BCryptCreateHash, BCryptFinishHash, BCryptGetProperty, BCryptHashData,
+        CertCreateSelfSignCertificate, CertFreeCertificateContext, CertStrToNameW,
+        BCRYPT_HASH_HANDLE, BCRYPT_OBJECT_LENGTH, BCRYPT_SHA256_ALG_HANDLE, CERT_CONTEXT,
+        CERT_CREATE_SELFSIGN_FLAGS, CERT_OID_NAME_STR, CRYPT_ALGORITHM_IDENTIFIER,
+        CRYPT_INTEGER_BLOB, HCRYPTPROV_OR_NCRYPT_KEY_HANDLE, X509_ASN_ENCODING,
+    },
+};
 
 use super::WinCryptoError;
 

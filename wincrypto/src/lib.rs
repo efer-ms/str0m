@@ -2,7 +2,7 @@
 extern crate tracing;
 
 use thiserror::Error;
-use windows::Win32::Foundation::NTSTATUS;
+use windows::{core::Error as WindowsError, Win32::Foundation::NTSTATUS};
 
 mod cert;
 pub use cert::*;
@@ -28,8 +28,8 @@ impl WinCryptoError {
     }
 }
 
-impl From<windows_result::Error> for WinCryptoError {
-    fn from(err: windows_result::Error) -> Self {
+impl From<WindowsError> for WinCryptoError {
+    fn from(err: WindowsError) -> Self {
         let code = err.code();
         Self(format!("WindowsError({code})"))
     }

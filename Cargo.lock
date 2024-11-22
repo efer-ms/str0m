@@ -957,9 +957,6 @@ dependencies = [
  "thiserror",
  "tracing",
  "windows",
- "windows-core 0.52.0",
- "windows-result",
- "windows-strings",
 ]
 
 [[package]]
