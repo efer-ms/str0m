@@ -4,6 +4,9 @@ use windows::Win32::Foundation::NTSTATUS;
 mod cert;
 pub use cert::*;
 
+mod sha1;
+pub use sha1::*;
+
 #[derive(Error, Debug)]
 #[error("{0}")]
 pub struct WinCryptoError(pub String);

@@ -136,9 +136,9 @@ mod tests {
             let cert = super::Certificate::new_self_signed("cn=WebRTC").unwrap();
 
             // Verify it is self-signed.
-            let subject = (*(**cert.0).pCertInfo).Subject;
+            let subject = (*(*cert.0).pCertInfo).Subject;
             let subject = std::slice::from_raw_parts(subject.pbData, subject.cbData as usize);
-            let issuer = (*(**cert.0).pCertInfo).Issuer;
+            let issuer = (*(*cert.0).pCertInfo).Issuer;
             let issuer = std::slice::from_raw_parts(issuer.pbData, issuer.cbData as usize);
             assert_eq!(issuer, subject);
         }
