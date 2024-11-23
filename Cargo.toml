@@ -24,11 +24,10 @@ rust-version = "1.65"
 # security patching than updating statically linked software.
 
 [features]
-default = ["wincrypto"]
-# default = ["openssl", "vendored", "sha1"]
+default = ["openssl", "vendored", "sha1"]
 openssl = ["dep:openssl", "dep:openssl-sys", "dep:libc", "rouille/ssl"]
 vendored = ["openssl?/vendored"]
-wincrypto = ["dep:windows", "dep:windows-core", "dep:windows-strings", "dep:windows-result"]
+wincrypto = ["dep:str0m_wincrypto"]
 
 # Without the sha1 feature, str0m uses the openssl sha1 impl which is slower.
 sha1 = ["dep:sha1"]
@@ -55,11 +54,7 @@ crc = "3.0.0"
 serde = { version = "1.0.152", features = ["derive"] }
 
 # Windows Crypto (CNG + SChannel)
-str0m_wincrypto = {path = "wincrypto" }
-windows = { version = "0.58", features=["Win32_Security_Cryptography", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials",], optional = true }
-windows-core = { version = "0", optional = true }
-windows-strings = { version = "0.1", optional = true }
-windows-result = {version = "0.2", optional = true}
+str0m_wincrypto = { path = "wincrypto", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 sha1 = { version = "0.10.6", features = ["asm"], optional = true }
