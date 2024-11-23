@@ -27,10 +27,12 @@ rust-version = "1.65"
 default = ["openssl", "vendored", "sha1"]
 openssl = ["dep:openssl", "dep:openssl-sys", "dep:libc", "rouille/ssl"]
 vendored = ["openssl?/vendored"]
-wincrypto = ["dep:str0m_wincrypto"]
 
 # Without the sha1 feature, str0m uses the openssl sha1 impl which is slower.
 sha1 = ["dep:sha1"]
+
+# Uses native Windows API to implement cryptographic features, use instead on openssl and sha1.
+wincrypto = ["dep:str0m_wincrypto"]
 
 _internal_dont_use_log_stats = []
 _internal_test_exports = []
