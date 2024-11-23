@@ -25,8 +25,14 @@ impl WinCryptoDtlsCert {
 pub(super) fn create_fingerprint(
     certificate: &str0m_wincrypto::WinCryptoCertificate,
 ) -> Result<Fingerprint, WinCryptoError> {
-    certificate.sha256_fingerprint().map(|bytes| Fingerprint {
+    certificate
+        .sha256_fingerprint()
+        .map(|f| create_sha256_fingerprint(&f))
+}
+
+pub(super) fn create_sha256_fingerprint(bytes: &[u8; 32]) -> Fingerprint {
+    Fingerprint {
         hash_func: "sha-256".into(),
         bytes: bytes.to_vec(),
-    })
+    }
 }

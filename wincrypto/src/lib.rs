@@ -13,6 +13,9 @@ pub use sha1::*;
 mod srtp;
 pub use srtp::*;
 
+mod dtls;
+pub use dtls::*;
+
 #[derive(Error, Debug)]
 #[error("{0}")]
 pub struct WinCryptoError(pub String);
