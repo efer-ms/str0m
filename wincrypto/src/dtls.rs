@@ -409,6 +409,9 @@ impl Dtls {
         };
 
         debug!("DTLS Handshake status: {status}");
+        // We'll blindly replace the value in seciruty_ctx. The APIs indicate
+        // that phnewcontext will be equivalent to phcontext after the initial
+        // call.
         self.security_ctx = Some(new_ctx_handle);
 
         // Only output datagram if we have data to send and we didn't fail.

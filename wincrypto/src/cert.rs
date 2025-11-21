@@ -5,16 +5,16 @@ use windows::{
         Foundation::GetLastError,
         Security::Cryptography::{
             szOID_ECDSA_SHA256, szOID_RSA_SHA256RSA, BCryptCreateHash, BCryptFinishHash,
-            BCryptHashData, CertCreateSelfSignCertificate, CertFreeCertificateContext,
+            BCryptHashData, BCryptDestroyHash, CertCreateSelfSignCertificate, CertFreeCertificateContext,
             CertStrToNameW, NCryptCreatePersistedKey, NCryptDeleteKey, NCryptFinalizeKey,
             NCryptOpenStorageProvider, BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALG_HANDLE, CERT_CONTEXT,
             CERT_CREATE_SELFSIGN_FLAGS, CERT_KEY_SPEC, CERT_OID_NAME_STR,
             CRYPT_ALGORITHM_IDENTIFIER, CRYPT_INTEGER_BLOB, CRYPT_KEY_PROV_INFO,
             HCRYPTPROV_OR_NCRYPT_KEY_HANDLE, MS_KEY_STORAGE_PROVIDER, NCRYPT_ECDSA_P256_ALGORITHM,
-            NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG,
+            NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG,
             X509_ASN_ENCODING,
         },
-        System::Rpc::{UuidCreate, UuidToStringW},
+        System::Rpc::{UuidCreate, UuidToStringW, RpcStringFreeW},
     },
 };
 
@@ -84,7 +84,9 @@ impl Certificate {
                     CERT_KEY_SPEC(0),
                     NCRYPT_SILENT_FLAG,
                 )?;
-                NCryptFinalizeKey(key_handle, NCRYPT_FLAGS(0))?;
+                // Finalize the key silently so the KSP does not show UI for
+                // ephemeral keys.
+                NCryptFinalizeKey(key_handle, NCRYPT_SILENT_FLAG)?;
 
                 let key_prov_info = CRYPT_KEY_PROV_INFO {
                     pwszContainerName: guid_pwstr,
@@ -97,19 +99,22 @@ impl Certificate {
                     ..Default::default()
                 };
 
-                (
-                    CertCreateSelfSignCertificate(
-                        HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(key_handle.0),
-                        &subject_blob,
-                        CERT_CREATE_SELFSIGN_FLAGS(0),
-                        Some(&key_prov_info as *const _ as *const _),
-                        Some(&signature_algorithm),
-                        None,
-                        None,
-                        None,
-                    ),
-                    Some(key_handle),
-                )
+                let cert = CertCreateSelfSignCertificate(
+                    HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(key_handle.0),
+                    &subject_blob,
+                    CERT_CREATE_SELFSIGN_FLAGS(0),
+                    Some(&key_prov_info as *const _ as *const _),
+                    Some(&signature_algorithm),
+                    None,
+                    None,
+                    None,
+                );
+                // Free the RPC-allocated GUID string returned by UuidToStringW.
+                let rpc_status = RpcStringFreeW(&mut guid_pwstr);
+                if rpc_status.is_err() {
+                    warn!(?rpc_status, "RpcStringFreeW failed");
+                }
+                (cert, Some(key_handle))
             } else {
                 // Use RSA-SHA256 for the signature, since SHA1 is deprecated.
                 let signature_algorithm = CRYPT_ALGORITHM_IDENTIFIER {
@@ -171,6 +176,8 @@ impl Certificate {
 
             // Grab the result of the hash.
             WinCryptoError::from_ntstatus(BCryptFinishHash(*hash_handle, &mut hash, 0))?;
+            // Destroy the hash handle to free native resources.
+            WinCryptoError::from_ntstatus(BCryptDestroyHash(*hash_handle))?;
         }
         Ok(hash)
     }
@@ -194,9 +201,10 @@ impl Drop for Certificate {
         // SAFETY: The Certificate is no longer usable, so it's safe to pass the pointer
         // to Windows for release.
         unsafe {
-            _ = CertFreeCertificateContext(Some(self.cert_context));
+            // CertFreeCertificateContext always returns a non-zero result, so we can ignore it.
+            let _ = CertFreeCertificateContext(Some(self.cert_context));
             if let Some(key_handle) = self.key_handle {
-                _ = NCryptDeleteKey(key_handle, NCRYPT_SILENT_FLAG.0);
+                NCryptDeleteKey(key_handle, NCRYPT_SILENT_FLAG.0).expect("NCryptDeleteKey failed!")
             }
         }
     }
