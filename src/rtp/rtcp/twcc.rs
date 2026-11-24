@@ -45,8 +45,9 @@ impl Twcc {
     pub fn into_iter(self, time_zero: Instant, extend_from: TwccSeq) -> TwccIter {
         let millis = self.reference_time as u64 * 64;
         let time_base = time_zero + Duration::from_millis(millis);
+        // A report starting before sequence number 0 extends to near u64::MAX and wraps.
         let base_seq = extend_u16(Some(*extend_from), self.base_seq);
-        let last_seq = base_seq + self.status_count as u64;
+        let last_seq = base_seq.wrapping_add(self.status_count as u64);
 
         TwccIter {
             base_seq,
@@ -70,10 +71,18 @@ impl Iterator for TwccIter {
     type Item = (TwccSeq, PacketStatus, Option<Instant>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let seq: TwccSeq = (self.base_seq + self.index as u64).into();
+        let seq: TwccSeq = self.base_seq.wrapping_add(self.index as u64).into();
 
         if *seq == self.last_seq {
             return None;
+        }
+
+        // A zero-length run covers no packets and the parser reads no deltas for it.
+        // Chunks are only popped once `index` reaches their length, so skip these
+        // here, or the run's status would be applied to every remaining packet and
+        // consume deltas that belong to later chunks.
+        while let Some(PacketChunk::Run(_, 0)) = self.twcc.chunks.front() {
+            self.twcc.chunks.pop_front();
         }
 
         let head = self.twcc.chunks.front()?;
@@ -133,7 +142,7 @@ impl Iterator for TwccIter {
         self.index += 1;
         if self.index == amount as usize {
             self.twcc.chunks.pop_front();
-            self.base_seq = *seq + 1;
+            self.base_seq = seq.wrapping_add(1);
             self.index = 0;
         }
 
@@ -280,6 +289,23 @@ impl TwccRecvRegister {
         // The highest seq must be the last since update_seq inserts values
         // using a binary search.
         self.queue.back().map(|r| r.seq)
+    }
+
+    /// Extend the TWCC sequence number of a received packet, or `None` if it wraps back
+    /// before sequence number 0.
+    pub fn extend_seq(&self, seq: u16) -> Option<TwccSeq> {
+        let prev = self.max_seq().map(|s| *s);
+        let extended = extend_u16(prev, seq);
+
+        // Extending backwards past 0 wraps around to near u64::MAX. That can't be reported,
+        // and as the new maximum it would throw off extending every later sequence number.
+        // Extending otherwise never goes more than half the range past the maximum.
+        if prev.is_some_and(|p| extended > p.saturating_add(1 << 15)) {
+            trace!("Ignoring TWCC sequence number before sequence 0: {}", seq);
+            return None;
+        }
+
+        Some(extended.into())
     }
 
     pub fn update_seq(&mut self, seq: TwccSeq, time: Instant) {
@@ -489,7 +515,7 @@ impl TwccRecvRegister {
         // sequence numbers rather than RTP sequence numbers.
         let max_seq = self.receive_window.max_seq?;
         let base_seq = self.receive_window.base_seq?;
-        let expected = *max_seq - *base_seq + 1_u64;
+        let expected = (*max_seq - *base_seq).saturating_add(1);
 
         let expected_interval = expected - self.receive_window.expected_prior;
         self.receive_window.expected_prior = expected;
@@ -518,13 +544,18 @@ fn build_interims(
     let mut prev = (base_seq, base_time);
 
     for r in report_from {
+        // The report counts its statuses in 16 bits. End it before a packet it can't
+        // reach, the next report starts there.
+        if *r.seq - *base_seq >= u16::MAX as u64 {
+            break;
+        }
+
         let diff_seq = *r.seq - *prev.0;
 
         if diff_seq > 1 {
             let mut todo = diff_seq - 1;
             while todo > 0 {
-                // max 2^13 run length in each missing chunk
-                let n = todo.min(8192);
+                let n = todo.min(MAX_RUN_LENGTH as u64);
                 interims.push_back(ChunkInterim::Missing(n as u16));
                 todo -= n;
             }
@@ -637,6 +668,9 @@ impl ChunkInterim {
     }
 }
 
+/// The run length of a run-length chunk has 13 bits.
+const MAX_RUN_LENGTH: u16 = 0x1fff;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketChunk {
     Run(PacketStatus, u16), // 13 bit repeat
@@ -743,7 +777,7 @@ impl PacketChunk {
 
     fn free(&self) -> u16 {
         match self {
-            PacketChunk::Run(_, n) => 8192 - *n,
+            PacketChunk::Run(_, n) => MAX_RUN_LENGTH - *n,
             PacketChunk::VectorSingle(_, filled) => 14 - *filled,
             PacketChunk::VectorDouble(_, filled) => 7 - *filled,
         }
@@ -763,7 +797,7 @@ impl PacketChunk {
             PacketChunk::Run(s, n) => {
                 let mut x = 0_u16;
                 x |= (*s as u16) << 13;
-                assert!(*n <= 8192);
+                assert!(*n <= MAX_RUN_LENGTH);
                 x |= n;
                 x
             }
@@ -950,7 +984,7 @@ impl<'a> TryFrom<&'a [u8]> for Twcc {
                 PacketChunk::Run(PacketStatus::ReceivedLargeOrNegativeDelta, n) => {
                     let n = *n as usize;
                     twcc.delta.extend(read_delta_large(buf, n)?);
-                    buf = &buf[n..];
+                    buf = &buf[n * 2..];
                 }
                 PacketChunk::VectorSingle(v, _) => {
                     let n = v.count_ones() as usize;
@@ -1585,6 +1619,86 @@ mod test {
     }
 
     #[test]
+    fn received_seq_from_before_the_first_is_ignored() {
+        // Extending backwards past 0 wraps around to near u64::MAX. That used to become the
+        // maximum, and later sequence numbers were extended from it to near u64::MAX too.
+        let mut reg = TwccRecvRegister::new(100);
+        let now = Instant::now();
+
+        for seq in [5, 65_530, 3, 6, 20_000, 40_000, 60_000, 1] {
+            if let Some(seq) = reg.extend_seq(seq) {
+                reg.update_seq(seq, now);
+            }
+        }
+
+        let seqs: Vec<u64> = reg.queue.iter().map(|r| *r.seq).collect();
+        assert_eq!(seqs, [3, 5, 6, 20_000, 40_000, 60_000, 65_537]);
+        assert!(reg.loss().is_some());
+
+        // Recorded without extending, such a number used to overflow the loss.
+        let mut reg = TwccRecvRegister::new(100);
+        reg.update_seq(0.into(), now);
+        reg.update_seq(u64::MAX.into(), now);
+        assert!(reg.loss().is_some());
+    }
+
+    #[test]
+    fn report_from_before_the_first_seq_does_not_overflow() {
+        let now = Instant::now();
+        // Cross sequence 0 both within a chunk and between chunks.
+        for chunks in [
+            vec![Run(ReceivedSmallDelta, 4)],
+            vec![Run(ReceivedSmallDelta, 2), Run(ReceivedSmallDelta, 2)],
+        ] {
+            let mut reg = TwccSendRegister::new(25);
+            for seq in 0..4 {
+                reg.register_seq(TwccPacketId::new(seq), now, 0);
+            }
+
+            let twcc = Twcc {
+                sender_ssrc: 1.into(),
+                ssrc: 2.into(),
+                base_seq: 65_534,
+                status_count: 4,
+                reference_time: 0,
+                feedback_count: 0,
+                chunks: chunks.into(),
+                delta: [Small(4); 4].into(),
+            };
+
+            let seqs: Vec<u64> = twcc
+                .clone()
+                .into_iter(now, 3.into())
+                .map(|(seq, _, _)| *seq)
+                .collect();
+            assert_eq!(seqs, [u64::MAX - 1, u64::MAX, 0, 1]);
+
+            // No send record matches the first status, so the report is ignored.
+            assert!(reg.apply_report(twcc, now).is_none());
+        }
+    }
+
+    #[test]
+    fn parse_large_delta_run_followed_by_more_deltas() {
+        let buf = [
+            0, 0, 0, 1, // sender ssrc
+            0, 0, 0, 2, // media ssrc
+            0, 1, // base seq
+            0, 3, // status count
+            0, 0, 0, // reference time
+            0, // feedback count
+            0x40, 0x02, // run of 2 large or negative delta
+            0x20, 0x01, // run of 1 small delta
+            0x01, 0x90, // large delta 100ms
+            0xff, 0xf0, // negative delta -4ms
+            0x08, // small delta 2ms
+        ];
+        let twcc = Twcc::try_from(&buf[..]).unwrap();
+
+        assert_eq!(twcc.delta, vec![Large(400), Large(-16), Small(8)]);
+    }
+
+    #[test]
     fn too_big_time_gap_requires_two_reports() {
         let mut reg = TwccRecvRegister::new(100);
 
@@ -1604,6 +1718,46 @@ mod test {
         // 140 * 64 = 8960
         // So the first offset must be 40ms, i.e. 40_000us / 250us = 160
         assert_eq!(report2.delta[0], Small(160));
+    }
+
+    #[test]
+    fn too_many_statuses_require_two_reports() {
+        // The status count has 16 bits. A report spanning more packets used to overflow it.
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        for (i, seq) in [0_u64, 65_534, 65_535].into_iter().enumerate() {
+            reg.update_seq(seq.into(), now + Duration::from_millis(i as u64));
+        }
+
+        let report1 = reg.build_report(1000).unwrap();
+        assert_eq!(report1.status_count, u16::MAX);
+
+        let report2 = reg.build_report(1000).unwrap();
+        assert_eq!(report2.base_seq, 65_535);
+        assert_eq!(report2.status_count, 1);
+        assert!(reg.build_report(1000).is_none());
+    }
+
+    #[test]
+    fn huge_sequence_gap_requires_two_reports() {
+        // A TWCC sequence number from before the first one extends to near u64::MAX. The
+        // report used to fill that gap with missing chunks until it ran out of memory.
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(0.into(), now);
+        let before_first = extend_u16(Some(0), 65_535);
+        reg.update_seq(before_first.into(), now + Duration::from_millis(1));
+
+        let report1 = reg.build_report(1000).unwrap();
+        assert_eq!(report1.status_count, 1);
+
+        let report2 = reg.build_report(1000).unwrap();
+        assert_eq!(report2.base_seq, 65_535);
+        assert_eq!(report2.status_count, 1);
     }
 
     /// Reconstructs every receive time of a report the way its receiver does.
@@ -1777,25 +1931,45 @@ mod test {
     }
 
     #[test]
-    fn run_max_is_8192() {
+    fn run_max_is_8191() {
         let mut reg = TwccRecvRegister::new(100);
 
         let now = Instant::now();
 
         reg.update_seq(0.into(), now + Duration::from_millis(0));
-        reg.update_seq(8194.into(), now + Duration::from_millis(10));
+        reg.update_seq(8206.into(), now + Duration::from_millis(10));
 
         let report = reg.build_report(1000).unwrap();
 
-        assert_eq!(report.status_count, 8195);
+        assert_eq!(report.status_count, 8207);
         assert_eq!(
             report.chunks,
             vec![
                 VectorSingle(8192, 14),
-                Run(NotReceived, 8180),
-                Run(ReceivedSmallDelta, 1)
+                Run(NotReceived, 8191),
+                VectorSingle(4096, 14)
             ]
         );
+    }
+
+    #[test]
+    fn long_loss_round_trips() {
+        // The run length has 13 bits. A run of 8192 lost packets used to overflow into the
+        // status and was sent as a zero-length run of received packets.
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(0.into(), now);
+        reg.update_seq(20_000.into(), now + Duration::from_millis(10));
+
+        let report = reg.build_report(1000).unwrap();
+        assert_eq!(report.status_count, 20_001);
+
+        let mut buf = vec![0; report.length_words() * 4];
+        let n = report.write_to(&mut buf);
+        let parsed: Twcc = (&buf[4..n]).try_into().unwrap();
+        assert_eq!(parsed, report);
     }
 
     #[test]
@@ -2174,6 +2348,43 @@ mod test {
         .count();
 
         assert_eq!(twcc_iter_count, status_count as usize);
+    }
+
+    #[test]
+    fn test_twcc_iter_skips_zero_length_runs() {
+        // Without skipping, the first zero run's status is applied to every later
+        // packet, which panics with "Incorrect large delta size" at seq 2.
+        let buf = [
+            0, 0, 0, 1, // sender ssrc
+            0, 0, 0, 2, // media ssrc
+            0, 1, // base seq
+            0, 4, // status count
+            0, 0, 0, // reference time
+            0, // feedback count
+            0x20, 0x00, // run of 0 small delta
+            0x20, 0x01, // run of 1 small delta
+            0x00, 0x00, // run of 0 not received
+            0x20, 0x00, // run of 0 small delta
+            0xe1, 0x00, // 2-bit vector: large, not received, small, 4 x not received
+            0x04, // small delta 1ms
+            0x01, 0x90, // large delta 100ms
+            0x08, // small delta 2ms
+        ];
+        let twcc = Twcc::try_from(&buf[..]).unwrap();
+
+        let now = Instant::now();
+        let result: Vec<_> = twcc.into_iter(now, 1.into()).collect();
+
+        let ms = Duration::from_millis;
+        assert_eq!(
+            result,
+            vec![
+                (1.into(), ReceivedSmallDelta, Some(now + ms(1))),
+                (2.into(), ReceivedLargeOrNegativeDelta, Some(now + ms(101))),
+                (3.into(), NotReceived, None),
+                (4.into(), ReceivedSmallDelta, Some(now + ms(103))),
+            ]
+        );
     }
 
     #[test]

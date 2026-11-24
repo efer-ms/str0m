@@ -1,5 +1,27 @@
 # Unreleased
 
+# 0.26.0
+
+  * Follow libWebRTC ICE nominations after NAT rebinding #1168
+  * Support the Dependency Descriptor RTP header extension #1105
+  * Build `Mid`, `Rid` and the other id types from `&str` without allocating #1172
+  * Prefer BUNDLE media transport attributes over SDP session defaults #1158
+  * Warn and ignore conflicting SDP mappings without panicking #1159
+  * Align loss-based BWE bounds with libwebrtc #1137
+  * Keep `~` in sanitised msid ids #1142
+  * Saturate VLA resolutions of 65536 instead of overflowing #1153
+  * Cap TWCC feedback runs at 8191 packets, longer runs were sent as zero-length runs #1150
+  * Ignore TWCC sequence numbers that wrap back before 0 instead of overflowing #1152
+  * Read TWCC deltas after a run of large deltas from the right offset #1144
+  * Skip zero-length TWCC run chunks instead of panicking #1143
+  * Ignore remote ICE candidates and STUN messages with port 0 or an unspecified IP #1148
+  * Limit TWCC feedback reports to 65535 packets #1151
+  * `color-space` RTP header extension (breaking) #1135
+  * Resend a NACKed packet at most once per round trip #1134
+  * Exclude recovered RTX packets from primary stream jitter reports #1121
+  * Allow disabling BWE estimate smoothing #1119
+  * Update `url` to 2.5.9 for RUSTSEC-2026-0592 #1177
+
 # 0.25.0
 
   * Reject SDP with conflicting RTX apt values instead of panicking #1113

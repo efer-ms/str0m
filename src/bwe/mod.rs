@@ -101,8 +101,8 @@ impl Bwe {
         self.bwe.update(records, now);
     }
 
-    pub fn poll_estimate(&mut self) -> Option<Bitrate> {
-        self.smoother.poll()
+    pub fn poll_estimate(&mut self, smoothing: bool) -> Option<Bitrate> {
+        self.smoother.poll(smoothing)
     }
 
     pub fn poll_timeout(&self) -> (Option<Instant>, Reason) {
@@ -271,16 +271,6 @@ impl SendSideBandwidthEstimator {
         // This corresponds to UpdateLossBasedEstimator + UpdateEstimate
         self.loss_controller
             .update_bandwidth_estimate(&send_records, delay_estimate);
-
-        // Loss-based result is capped by delay_based_limit
-        let loss_result = self.loss_controller.loss_based_result();
-        if let Some(loss_estimate) = loss_result.bandwidth_estimate {
-            if loss_estimate > delay_estimate {
-                // Loss controller produced higher estimate than delay controller
-                // Cap it at delay estimate (delay controller is the upper limit)
-                self.loss_controller.set_bandwidth_estimate(delay_estimate);
-            }
-        }
 
         // Feed the (possibly combined) estimate into subcomponents wanting it.
         self.propagate_estimate();

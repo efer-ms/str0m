@@ -34,7 +34,7 @@ use crate::rtp_::SeqNo;
 use crate::rtp_::SeqNoWindow;
 use crate::rtp_::{Bitrate, ExtensionMap, Goodbye, Mid, ReportList, Rtcp, RtcpFb};
 use crate::rtp_::{Dlrr, DlrrItem, ExtendedReport, ReportBlock};
-use crate::rtp_::{RtpHeader, SessionId, TwccPacketId, extend_u16};
+use crate::rtp_::{RtpHeader, SessionId, TwccPacketId};
 use crate::rtp_::{SrtpContext, Ssrc};
 use crate::rtp_::{TwccRecvRegister, TwccSendRegister};
 use crate::stats::StatsSnapshot;
@@ -99,6 +99,7 @@ pub(crate) struct Session {
 
     bwe: Option<Bwe>,
     bwe_last_event: Option<(Bitrate, bool)>,
+    bwe_smoothing: bool,
 
     enable_twcc_feedback: bool,
 
@@ -204,6 +205,7 @@ impl Session {
             max_rx_seq_lookup: HashMap::new(),
             bwe,
             bwe_last_event: None,
+            bwe_smoothing: config.bwe_smoothing,
             enable_twcc_feedback: false,
             pacer,
             pacer_control: PacerControl::new(),
@@ -727,9 +729,9 @@ impl Session {
 
         // Mark as received for TWCC purposes
         if let Some(transport_cc) = header.ext_vals.transport_cc {
-            let prev = self.twcc_rx_register.max_seq();
-            let extended = extend_u16(prev.map(|s| *s), transport_cc);
-            self.twcc_rx_register.update_seq(extended.into(), now);
+            if let Some(seq) = self.twcc_rx_register.extend_seq(transport_cc) {
+                self.twcc_rx_register.update_seq(seq, now);
+            }
         }
 
         // Store largest seen seq_no for the SSRC. This is used in case we get SSRC changes
@@ -743,7 +745,8 @@ impl Session {
         let (mid, ssrc) = mapped.unwrap();
 
         // Register reception in nack registers.
-        let receipt_outer = stream.update_register(now, &header, clock_rate, is_repair, seq_no);
+        let receipt_outer =
+            stream.update_register(now, &header, clock_rate, is_repair, seq_no, is_repair);
 
         // RED-recovered packets (frame mode) are collected here and delivered after the
         // primary, filling single-packet losses from the next packet's redundancy.
@@ -777,8 +780,8 @@ impl Session {
             // header.ssrc is changed by un_rtx() above to be main SSRC.
             update_max_seq(&mut self.max_rx_seq_lookup, header.ssrc, seq_no);
 
-            // Now update the "main" register with the repaired packet info.
-            let receipt = stream.update_register(now, &header, clock_rate, false, seq_no);
+            // Update primary recovery state, but RTX arrival must not update primary jitter.
+            let receipt = stream.update_register(now, &header, clock_rate, false, seq_no, true);
             (receipt, data)
         } else if is_red && !self.rtp_mode {
             // Frame mode: RED rides the main SSRC/seq. Decode to the primary (Opus) payload
@@ -1020,7 +1023,7 @@ impl Session {
             self.bwe.is_some() && self.srtp_tx.is_some() && self.probe_media().is_some();
         if let Some(bwe) = &mut self.bwe {
             // Drain estimates even while unavailable so they cannot be delivered later.
-            let estimate = bwe.poll_estimate();
+            let estimate = bwe.poll_estimate(self.bwe_smoothing);
             let estimate = match (can_probe, self.bwe_last_event) {
                 (false, Some((last, true))) => Some(last),
                 (false, _) => None,
