@@ -8,7 +8,7 @@ use dimpl::{CryptoError, CryptoOperation};
 use openssl::ec::EcKey;
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
-use openssl::pkey::PKey;
+use openssl::pkey::{Id, PKey};
 
 /// ECDSA signing key implementation using OpenSSL.
 struct EcdsaSigningKey {
@@ -147,7 +147,7 @@ impl SignatureVerifier for OsslSignatureVerifier {
         hash_alg: HashAlgorithm,
         sig_alg: SignatureAlgorithm,
     ) -> Result<(), CryptoError> {
-        if sig_alg != SignatureAlgorithm::ECDSA {
+        if !matches!(sig_alg, SignatureAlgorithm::ECDSA | SignatureAlgorithm::RSA) {
             return Err(CryptoError::UnsupportedSignatureAlgorithm(sig_alg));
         }
 
@@ -169,16 +169,22 @@ impl SignatureVerifier for OsslSignatureVerifier {
         let pkey = cert
             .public_key()
             .map_err(|_| CryptoError::InvalidSubjectPublicKey)?;
-        let group = match pkey
-            .ec_key()
-            .map_err(|_| CryptoError::InvalidSubjectPublicKey)?
-            .group()
-            .curve_name()
-            .ok_or(CryptoError::MissingEcCurveParameter)?
-        {
-            Nid::X9_62_PRIME256V1 => dimpl::NamedGroup::Secp256r1,
-            Nid::SECP384R1 => dimpl::NamedGroup::Secp384r1,
-            _ => return Err(CryptoError::UnsupportedEcCurve),
+        let group = match (sig_alg, pkey.id()) {
+            (SignatureAlgorithm::ECDSA, Id::EC) => {
+                let nid = pkey
+                    .ec_key()
+                    .map_err(|_| CryptoError::InvalidSubjectPublicKey)?
+                    .group()
+                    .curve_name()
+                    .ok_or(CryptoError::MissingEcCurveParameter)?;
+                Some(match nid {
+                    Nid::X9_62_PRIME256V1 => dimpl::NamedGroup::Secp256r1,
+                    Nid::SECP384R1 => dimpl::NamedGroup::Secp384r1,
+                    _ => return Err(CryptoError::UnsupportedEcCurve),
+                })
+            }
+            (SignatureAlgorithm::RSA, Id::RSA) => None,
+            _ => return Err(CryptoError::InvalidSubjectPublicKey),
         };
 
         // Verify the signature
@@ -194,10 +200,13 @@ impl SignatureVerifier for OsslSignatureVerifier {
         if valid {
             Ok(())
         } else {
-            Err(CryptoError::SignatureVerificationFailed {
-                signature: sig_alg,
-                hash: hash_alg,
-                group,
+            Err(match group {
+                Some(group) => CryptoError::SignatureVerificationFailed {
+                    signature: sig_alg,
+                    hash: hash_alg,
+                    group,
+                },
+                None => CryptoError::OperationFailed(CryptoOperation::VerifySignature),
             })
         }
     }
@@ -208,3 +217,157 @@ pub(super) static KEY_PROVIDER: OsslKeyProvider = OsslKeyProvider;
 
 /// Static instance of the signature verifier.
 pub(super) static SIGNATURE_VERIFIER: OsslSignatureVerifier = OsslSignatureVerifier;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openssl::asn1::Asn1Time;
+    use openssl::ec::EcGroup;
+    use openssl::pkey::Private;
+    use openssl::rsa::{Padding, Rsa};
+    use openssl::sign::Signer;
+    use openssl::x509::{X509, X509NameBuilder};
+
+    #[test]
+    fn rsa_certificate_signatures() {
+        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let cert = certificate(&key);
+
+        for (hash, md) in [
+            (HashAlgorithm::SHA256, MessageDigest::sha256()),
+            (HashAlgorithm::SHA384, MessageDigest::sha384()),
+        ] {
+            let mut signer = Signer::new(md, &key).unwrap();
+            signer.set_rsa_padding(Padding::PKCS1).unwrap();
+            let signature = signer.sign_oneshot_to_vec(b"message").unwrap();
+
+            SIGNATURE_VERIFIER
+                .verify_signature(&cert, b"message", &signature, hash, SignatureAlgorithm::RSA)
+                .unwrap();
+            assert_eq!(
+                SIGNATURE_VERIFIER.verify_signature(
+                    &cert,
+                    b"tampered",
+                    &signature,
+                    hash,
+                    SignatureAlgorithm::RSA,
+                ),
+                Err(CryptoError::OperationFailed(
+                    CryptoOperation::VerifySignature
+                ))
+            );
+            assert_eq!(
+                SIGNATURE_VERIFIER.verify_signature(
+                    &cert,
+                    b"message",
+                    &signature,
+                    hash,
+                    SignatureAlgorithm::ECDSA,
+                ),
+                Err(CryptoError::InvalidSubjectPublicKey)
+            );
+        }
+    }
+
+    fn certificate(key: &PKey<Private>) -> Vec<u8> {
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", "test").unwrap();
+        let name = name.build();
+        let mut cert = X509::builder().unwrap();
+        cert.set_version(2).unwrap();
+        cert.set_subject_name(&name).unwrap();
+        cert.set_issuer_name(&name).unwrap();
+        cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+            .unwrap();
+        cert.set_pubkey(key).unwrap();
+        cert.sign(key, MessageDigest::sha256()).unwrap();
+        cert.build().to_der().unwrap()
+    }
+
+    #[test]
+    fn ecdsa_certificate_signatures() {
+        for (nid, group) in [
+            (Nid::X9_62_PRIME256V1, dimpl::NamedGroup::Secp256r1),
+            (Nid::SECP384R1, dimpl::NamedGroup::Secp384r1),
+        ] {
+            let ec_group = EcGroup::from_curve_name(nid).unwrap();
+            let key = PKey::from_ec_key(EcKey::generate(&ec_group).unwrap()).unwrap();
+            let cert = certificate(&key);
+
+            for (hash, md) in [
+                (HashAlgorithm::SHA256, MessageDigest::sha256()),
+                (HashAlgorithm::SHA384, MessageDigest::sha384()),
+            ] {
+                let mut signer = Signer::new(md, &key).unwrap();
+                let signature = signer.sign_oneshot_to_vec(b"message").unwrap();
+
+                SIGNATURE_VERIFIER
+                    .verify_signature(
+                        &cert,
+                        b"message",
+                        &signature,
+                        hash,
+                        SignatureAlgorithm::ECDSA,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    SIGNATURE_VERIFIER.verify_signature(
+                        &cert,
+                        b"tampered",
+                        &signature,
+                        hash,
+                        SignatureAlgorithm::ECDSA,
+                    ),
+                    Err(CryptoError::SignatureVerificationFailed {
+                        signature: SignatureAlgorithm::ECDSA,
+                        hash,
+                        group,
+                    })
+                );
+                assert_eq!(
+                    SIGNATURE_VERIFIER.verify_signature(
+                        &cert,
+                        b"message",
+                        &signature,
+                        hash,
+                        SignatureAlgorithm::RSA,
+                    ),
+                    Err(CryptoError::InvalidSubjectPublicKey)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_signature_algorithms_and_hashes() {
+        assert_eq!(
+            SIGNATURE_VERIFIER.verify_signature(
+                &[],
+                b"message",
+                &[],
+                HashAlgorithm::SHA256,
+                SignatureAlgorithm::DSA,
+            ),
+            Err(CryptoError::UnsupportedSignatureAlgorithm(
+                SignatureAlgorithm::DSA
+            ))
+        );
+        for signature in [SignatureAlgorithm::RSA, SignatureAlgorithm::ECDSA] {
+            assert_eq!(
+                SIGNATURE_VERIFIER.verify_signature(
+                    &[],
+                    b"message",
+                    &[],
+                    HashAlgorithm::SHA512,
+                    signature,
+                ),
+                Err(CryptoError::UnsupportedSignaturePair {
+                    signature,
+                    hash: HashAlgorithm::SHA512,
+                })
+            );
+        }
+    }
+}
